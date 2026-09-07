@@ -14,6 +14,7 @@
 	<a href="https://github.com/coconilu/gitgrove/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/coconilu/gitgrove/ci.yml?branch=master&label=CI" alt="CI" /></a>
 	<img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue" alt="Platform" />
 	<img src="https://img.shields.io/badge/stack-Tauri%202%20%2B%20React%2019-orange" alt="Stack" />
+	<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License" /></a>
 </p>
 
 ---
@@ -70,6 +71,10 @@ pnpm -C app tauri build    # 打包
 - [开发指南](docs/development.md) — 环境、命令、测试、CI/CD
 - [在 Codex / Kimi Code 中打开](docs/open-in-agents.md) — Agent 集成与凭证边界
 - [发布流程](.github/RELEASING.md) — 一键发版与自动更新
+
+## License
+
+[MIT](LICENSE)
 
 ## 反馈
 
