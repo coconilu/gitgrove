@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.1（2026-09-07）
+
+- [修复] 自动批准并等待版本 PR 的实际 CI (#12)
+- ci: automate one-click version release through protected CI (#10)
+
 ## v1.0.0（2026-09-07）
 
 - feat: add dismissible updates and About settings (#8)
