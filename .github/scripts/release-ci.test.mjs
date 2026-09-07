@@ -26,8 +26,12 @@ const pr = {
 	number: 3,
 	state: "open",
 	merged: false,
-	base: { ref: "master" },
-	head: { ref: branch, sha },
+	base: {
+		ref: "master",
+		sha: "d".repeat(40),
+		repo: { full_name: "owner/repo" },
+	},
+	head: { ref: branch, sha, repo: { full_name: "owner/repo" } },
 };
 
 test("只认本次 dispatch 后正确提交、分支和 CI 工作流的运行", () => {
@@ -126,6 +130,8 @@ test("等待不到目标提交会超时，不使用另一提交的成功检查",
 test("版本 PR CI → 按 head 合并 → 合并提交 CI → 返回同一发布 SHA", async () => {
 	const calls = [];
 	const result = await completeVersionRelease(pr, {
+		checkPR: async (candidate) =>
+			calls.push(["pr-check", candidate.number, candidate.head.sha]),
 		check: async (...args) => calls.push(["check", ...args]),
 		merge: async (...args) => {
 			calls.push(["merge", ...args]);
@@ -135,7 +141,7 @@ test("版本 PR CI → 按 head 合并 → 合并提交 CI → 返回同一发�
 	});
 	assert.equal(result, mergedSha);
 	assert.deepEqual(calls, [
-		["check", branch, sha],
+		["pr-check", 3, sha],
 		["merge", 3, sha],
 		["current", "master", mergedSha],
 		["check", "master", mergedSha],
@@ -146,7 +152,7 @@ test("版本提交 CI 失败时不会调用合并", async () => {
 	let merged = false;
 	await assert.rejects(
 		completeVersionRelease(pr, {
-			check: async () => {
+			checkPR: async () => {
 				throw new Error("CI failed");
 			},
 			merge: async () => {
@@ -164,6 +170,9 @@ test("合并后主分支改变或 CI 失败都不能返回可发布提交", asyn
 		let checks = 0;
 		await assert.rejects(
 			completeVersionRelease(pr, {
+				checkPR: async () => {
+					checks++;
+				},
 				check: async () => {
 					if (++checks === 2) throw new Error("merged CI failed");
 				},

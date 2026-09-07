@@ -25,7 +25,7 @@ flowchart LR
 
 版本 PR 仍作为版本修改记录保留，但由流程自动处理。只使用 GITHUB_TOKEN，不需要额外的 PAT、GitHub App 或仓库 auto-merge 开关，不调整现有主分支保护。
 
-流程显式调用 CI 的 workflow_dispatch 并等待相同 SHA 的结果，避免依赖 GITHUB_TOKEN 创建 PR 后可能需要人工批准的 pull_request 运行。版本 PR 的 head SHA 与合并后的 SHA 分别验证，不能拿原版本或另一个提交的成功状态代替。最终构建、tag 与发布固定到同一个已通过 CI 的合并提交。
+流程等待版本 PR 对应的 pull_request CI；如 GitHub 将其置于 action_required，由发布任务在核对仓库、PR、提交与版本文件后调用官方审批接口，再等待该 PR 的真实检查通过。单独 workflow_dispatch 成功无法代替被审批阻塞的 PR 检查。合并后才显式 workflow_dispatch CI 验证新的主分支提交；构建、tag 与发布固定到这个已通过 CI 的 SHA。
 
 每次运行使用独立的 codex/release-<run-id> 分支，历史 release-v* 残留分支不会卡住新运行。同一次运行重试会验证并复用自己的版本分支 / PR，不覆盖其他分支；版本分支夹带源码或偏离自动生成的版本内容时停止。
 
@@ -47,7 +47,7 @@ flowchart LR
 
 仓库需允许 Actions 创建 PR：Settings → Actions → General → Allow GitHub Actions to create and approve pull requests。该仓库已启用。主分支仍要求 PR 与必需 check；若后续增加人工审批规则，需要同步调整发布权限设计，流程不会自行绕过。
 
-默认 GITHUB_TOKEN 权限保持 read；自动版本任务需要 contents/write、pull-requests/write、actions/write（触发并读取 CI），发布任务需要 contents/write。CI 自身只有读取权限。自动任务只合并本次生成并验证的版本 PR，不会自动合并功能 PR。
+默认 GITHUB_TOKEN 权限保持 read；自动版本任务需要 contents/write、pull-requests/write、actions/write（审批本次版本 PR 的 CI、触发和读取检查），发布任务需要 contents/write。CI 自身只有读取权限。自动任务只批准和合并本次生成并验证的版本 PR，不会自动批准外部 PR 或合并功能 PR。
 
 校验命令：
 
