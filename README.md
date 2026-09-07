@@ -21,6 +21,8 @@
 
 GitHub Desktop 把 worktree 当配角、不管 Actions；Orca 的 worktree 最强但定位是 AI agent 编排器，「GitHub 账号 → 我的仓库 → clone → worktree → issue/PR → CI」这条链路在一个应用里闭环的，目前还没有人做。GitGrove 就是来做这件事的。
 
+![GitGrove 实拍演示：Issues / PRs / Actions / 工作树 / My GitHub 巡览](docs/assets/demo.gif)
+
 ![项目总览](docs/assets/proto-home.png)
 
 ## 功能特性
