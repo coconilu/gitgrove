@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GitGrove — 以 worktree 为主轴的 GitHub 桌面客户端</title>
+<meta name="description" content="GitGrove：项目 ↔ worktree ↔ issue/PR 关系为主轴的 GitHub 桌面客户端。clone 仓库、管 worktree 和分支、看 Issues/PRs/Actions，Windows + macOS。" />
+<style>
+	:root {
+		--bg: #0d1117;
+		--bg-soft: #161b22;
+		--border: #30363d;
+		--fg: #e6edf3;
+		--fg-muted: #8b949e;
+		--accent: #2ea043;
+		--accent-2: #3fb950;
+		--link: #58a6ff;
+	}
+	* { margin: 0; padding: 0; box-sizing: border-box; }
+	body {
+		background: var(--bg);
+		color: var(--fg);
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+		line-height: 1.6;
+	}
+	a { color: var(--link); text-decoration: none; }
+	a:hover { text-decoration: underline; }
+	.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+	header {
+		border-bottom: 1px solid var(--border);
+		padding: 16px 0;
+		position: sticky; top: 0;
+		background: rgba(13,17,23,.9);
+		backdrop-filter: blur(8px);
+		z-index: 10;
+	}
+	header .wrap { display: flex; align-items: center; gap: 12px; }
+	header img { width: 32px; height: 32px; }
+	header .brand { font-weight: 700; font-size: 18px; }
+	header nav { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
+	header nav a { color: var(--fg-muted); }
+	header nav a:hover { color: var(--fg); text-decoration: none; }
+
+	.hero { text-align: center; padding: 80px 0 56px; }
+	.hero img.logo { width: 104px; height: 104px; }
+	.hero h1 { font-size: 44px; margin: 18px 0 12px; }
+	.hero p.sub { color: var(--fg-muted); font-size: 18px; max-width: 640px; margin: 0 auto 32px; }
+	.btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+	.btn {
+		display: inline-block; padding: 12px 26px; border-radius: 8px;
+		font-weight: 600; font-size: 15px; border: 1px solid var(--border);
+	}
+	.btn:hover { text-decoration: none; }
+	.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+	.btn-primary:hover { background: var(--accent-2); }
+	.btn-ghost { background: var(--bg-soft); color: var(--fg); }
+	.btn-ghost:hover { border-color: var(--fg-muted); }
+	.hero .shot {
+		margin: 48px auto 0; max-width: 960px;
+		border: 1px solid var(--border); border-radius: 12px;
+		box-shadow: 0 16px 48px rgba(0,0,0,.5);
+		width: 100%;
+	}
+
+	section { padding: 56px 0; }
+	h2 { font-size: 28px; text-align: center; margin-bottom: 12px; }
+	.lead { text-align: center; color: var(--fg-muted); max-width: 640px; margin: 0 auto 40px; }
+
+	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+	.card {
+		background: var(--bg-soft); border: 1px solid var(--border);
+		border-radius: 12px; padding: 22px;
+	}
+	.card h3 { font-size: 17px; margin-bottom: 8px; }
+	.card p { color: var(--fg-muted); font-size: 14px; }
+	.card .ico { font-size: 22px; }
+
+	.gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+	.gallery figure { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+	.gallery img { width: 100%; display: block; }
+	.gallery figcaption { padding: 10px 14px; font-size: 13px; color: var(--fg-muted); background: var(--bg-soft); }
+
+	pre {
+		background: var(--bg-soft); border: 1px solid var(--border);
+		border-radius: 10px; padding: 18px 22px; overflow-x: auto;
+		font-size: 14px; max-width: 640px; margin: 0 auto;
+	}
+	code { font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace; }
+
+	.docs-list { max-width: 640px; margin: 0 auto; }
+	.docs-list li { margin: 8px 0; color: var(--fg-muted); }
+
+	footer {
+		border-top: 1px solid var(--border); padding: 32px 0 48px;
+		color: var(--fg-muted); font-size: 14px; text-align: center;
+	}
+</style>
+</head>
+<body>
+
+<header>
+	<div class="wrap">
+		<img src="assets/icon.png" alt="GitGrove logo" />
+		<span class="brand">GitGrove</span>
+		<nav>
+			<a href="#features">功能</a>
+			<a href="#screenshots">截图</a>
+			<a href="#docs">文档</a>
+			<a href="https://github.com/coconilu/gitgrove">GitHub</a>
+		</nav>
+	</div>
+</header>
+
+<div class="wrap">
+
+	<section class="hero">
+		<img class="logo" src="assets/icon.png" alt="GitGrove" />
+		<h1>GitGrove</h1>
+		<p class="sub">以「项目 ↔ worktree ↔ issue/PR」关系为主轴的 GitHub 桌面客户端。<br/>
+		clone 仓库、并行 worktree、Issues / PRs / Actions，一个应用全闭环。</p>
+		<div class="btns">
+			<a class="btn btn-primary" href="https://github.com/coconilu/gitgrove/releases/latest">下载最新版</a>
+			<a class="btn btn-ghost" href="https://github.com/coconilu/gitgrove">查看源码</a>
+		</div>
+		<img class="shot" src="assets/proto-home.png" alt="GitGrove 项目总览界面" />
+	</section>
+
+	<section id="features">
+		<h2>为什么做 GitGrove</h2>
+		<p class="lead">GitHub Desktop 把 worktree 当配角、不管 Actions；Orca 的 worktree 最强但定位是 AI agent 编排器。「GitHub 账号 → 仓库 → clone → worktree → issue/PR → CI」的全链路闭环，目前还没有人做。</p>
+		<div class="grid">
+			<div class="card"><div class="ico">🗂</div><h3>My GitHub 面板</h3><p>列出你的全部仓库（含私有），按最近活动排序，一键 clone 到约定目录并自动注册为项目。</p></div>
+			<div class="card"><div class="ico">🌳</div><h3>worktree 一等公民</h3><p>主 clone 与 worktree 平级展示，新建/删除/锁定，在编辑器、终端、文件管理器中打开，删除走回收站。</p></div>
+			<div class="card"><div class="ico">🔗</div><h3>issue/PR 一键开 worktree</h3><p>从 issue 或 PR 直接开 worktree，自动建分支并持久化关联；已有 worktree 时一键跳转。</p></div>
+			<div class="card"><div class="ico">✅</div><h3>Actions 面板</h3><p>workflow 列表、run 历史、日志、手动 dispatch、rerun/cancel，不开网页就能管 CI。</p></div>
+			<div class="card"><div class="ico">📄</div><h3>文件树 panel</h3><p>右侧懒加载文件树，git status 角标，单击预览 Markdown、双击进编辑器。</p></div>
+			<div class="card"><div class="ico">🤖</div><h3>Open in Agent</h3><p>一键把项目或 worktree 在 Codex / Kimi Code 中打开，凭证全程不出 Rust 主进程。</p></div>
+		</div>
+	</section>
+
+	<section id="screenshots">
+		<h2>截图</h2>
+		<p class="lead">暗色优先，遵循 GitHub Primer 设计语言 —— 用起来就像 GitHub 本身。</p>
+		<div class="gallery">
+			<figure><img src="assets/proto-github.png" alt="My GitHub 面板" /><figcaption>My GitHub：我的仓库一键 clone</figcaption></figure>
+			<figure><img src="assets/proto-issues.png" alt="Issues 表格" /><figcaption>Issues 表格：行内「开 worktree」</figcaption></figure>
+			<figure><img src="assets/proto-actions.png" alt="Actions 面板" /><figcaption>Actions：run 历史、日志、rerun</figcaption></figure>
+		</div>
+	</section>
+
+	<section id="install">
+		<h2>安装与上手</h2>
+		<p class="lead">从 Releases 下载 Windows（NSIS）或 macOS（dmg）安装包，用 GitHub PAT 登录（repo + workflow scope）；本机 gh CLI 已登录则自动复用 token。应用内置自动更新。</p>
+		<pre><code># 源码构建
+pnpm -C app install
+pnpm -C app tauri dev     # 开发模式
+pnpm -C app tauri build   # 打包</code></pre>
+	</section>
+
+	<section id="docs">
+		<h2>文档</h2>
+		<ul class="docs-list">
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/README.md">README</a> — 功能、安装、快速开始</li>
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/方案-GitHub项目管理应用.md">产品/技术方案</a> — 定位、竞品分析、完整需求</li>
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/docs/architecture.md">架构文档</a> — 进程划分、数据模型、认证与安全</li>
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/docs/development.md">开发指南</a> — 环境、命令、测试、CI/CD</li>
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/docs/open-in-agents.md">Open in Agents</a> — Codex / Kimi Code 集成的凭证边界</li>
+			<li><a href="https://github.com/coconilu/gitgrove/blob/master/CHANGELOG.md">Changelog</a> — 版本历史</li>
+		</ul>
+	</section>
+
+</div>
+
+<footer>
+	<div class="wrap">
+		GitGrove — Tauri 2 + React 19 · Windows / macOS<br/>
+		<a href="https://github.com/coconilu/gitgrove">GitHub</a> ·
+		<a href="https://github.com/coconilu/gitgrove/releases">Releases</a> ·
+		<a href="https://github.com/coconilu/gitgrove/issues">反馈问题</a>
+	</div>
+</footer>
+
+</body>
+</html>
