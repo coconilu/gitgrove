@@ -18,6 +18,7 @@ export default function ResizeHandle({
 		<hr
 			className={"resize-handle" + (reverse ? " files-resize" : "")}
 			aria-label={label}
+			title="左右拖拽调整宽度，也可使用方向键"
 			aria-orientation="vertical"
 			aria-valuemin={min}
 			aria-valuemax={max}
@@ -39,8 +40,11 @@ export default function ResizeHandle({
 				}
 			}}
 			onPointerDown={(e) => {
+				if (e.button !== 0) return;
 				e.preventDefault();
+				e.currentTarget.focus();
 				e.currentTarget.setPointerCapture(e.pointerId);
+				e.currentTarget.dataset.dragging = "true";
 				e.currentTarget.dataset.startX = String(e.clientX);
 				e.currentTarget.dataset.startValue = String(value);
 			}}
@@ -57,6 +61,9 @@ export default function ResizeHandle({
 			onPointerUp={(e) => {
 				if (e.currentTarget.hasPointerCapture(e.pointerId))
 					e.currentTarget.releasePointerCapture(e.pointerId);
+			}}
+			onLostPointerCapture={(e) => {
+				delete e.currentTarget.dataset.dragging;
 			}}
 		/>
 	);

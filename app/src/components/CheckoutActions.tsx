@@ -7,18 +7,27 @@ import { OpenInMenu } from "./OpenInMenu";
 export function CiBadge({
 	status,
 	compact = false,
+	branch,
 }: {
 	status: string | null | undefined;
 	compact?: boolean;
+	branch?: string;
 }) {
 	const label = CI_LABELS[status ?? "unknown"] ?? "状态未知";
 	return (
 		<span
 			className={"ci-badge " + (status ?? "unknown")}
-			title={"最近 Actions 运行：" + label}
+			title={
+				branch
+					? "分支 " + branch + " 最近一次 GitHub Actions 运行：" + label
+					: "最近 Actions 运行：" + label
+			}
 		>
 			<span className={"ci " + (status ?? "unknown")} aria-hidden="true" />
-			<span>{compact && status === "none" ? "无运行" : label}</span>
+			<span>
+				{branch ? "分支 · " : ""}
+				{compact && status === "none" ? "无运行" : label}
+			</span>
 		</span>
 	);
 }

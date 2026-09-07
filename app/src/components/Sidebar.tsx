@@ -1,10 +1,10 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import * as api from "../api";
-import { CI_LABELS, selectionProject } from "../navigation";
+import { selectionProject } from "../navigation";
 import { useStore } from "../store";
 import type { CheckoutInfo, Project } from "../types";
-import { addLocalFolder, CiBadge, LinkBadge } from "./CheckoutActions";
+import { addLocalFolder, LinkBadge } from "./CheckoutActions";
 import { ResourceState } from "./ResourceState";
 
 export default function Sidebar() {
@@ -77,9 +77,6 @@ export default function Sidebar() {
 			</button>
 			<div className="checkout-badges">
 				<LinkBadge p={p} c={c} link={c.linkedWorkItem} />
-				{p.providerIdentity && s.ci[c.id] && (
-					<CiBadge status={s.ci[c.id]} compact />
-				)}
 			</div>
 		</div>
 	);
@@ -87,13 +84,11 @@ export default function Sidebar() {
 	for (const p of projects)
 		for (const c of p.checkouts) {
 			const label =
-				s.groupBy === "status"
-					? c.linkedWorkItem?.type === "pr"
-						? "关联 PR"
-						: c.linkedWorkItem
-							? "关联 Issue"
-							: "未关联任务"
-					: CI_LABELS[s.ci[c.id] ?? "unknown"];
+				c.linkedWorkItem?.type === "pr"
+					? "关联 PR"
+					: c.linkedWorkItem
+						? "关联 Issue"
+						: "未关联任务";
 			(lanes[label] ??= []).push({ p, c });
 		}
 	return (
@@ -140,13 +135,10 @@ export default function Sidebar() {
 				<span>分组</span>
 				<select
 					value={s.groupBy}
-					onChange={(e) =>
-						s.setGroupBy(e.target.value as "repo" | "status" | "ci")
-					}
+					onChange={(e) => s.setGroupBy(e.target.value as "repo" | "status")}
 				>
 					<option value="repo">按项目</option>
 					<option value="status">按任务关联</option>
-					<option value="ci">按最近运行</option>
 				</select>
 			</label>
 			<div className="rows">
@@ -179,22 +171,33 @@ export default function Sidebar() {
 									}
 								>
 									<button
-										className="expand-btn"
+										className="project-select"
+										title={p.localPath}
 										aria-label={
 											((s.expanded[p.id] ?? true) ? "收起 " : "展开 ") + p.name
 										}
 										aria-expanded={s.expanded[p.id] ?? true}
-										onClick={() => s.toggleProject(p.id)}
+										onClick={() => {
+											s.toggleProject(p.id);
+											s.openProject(p.id);
+										}}
 									>
-										{(s.expanded[p.id] ?? true) ? "⌄" : "›"}
-									</button>
-									<button
-										className="project-select"
-										title={p.localPath}
-										onClick={() => s.openProject(p.id)}
-									>
+										<svg
+											className="project-chevron"
+											width="16"
+											height="16"
+											viewBox="0 0 16 16"
+											fill="none"
+											stroke="currentColor"
+											strokeWidth="1.5"
+											strokeLinecap="round"
+											strokeLinejoin="round"
+											aria-hidden="true"
+										>
+											<path d="m6 4 4 4-4 4" />
+										</svg>
 										<span className="dot" style={{ background: p.color }} />
-										<span>{p.name}</span>
+										<span className="project-name">{p.name}</span>
 										<span className="count-pill">{p.checkouts.length}</span>
 									</button>
 									<details className="more-menu project-menu">
