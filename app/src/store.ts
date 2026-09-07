@@ -85,7 +85,7 @@ interface AppState {
 	tab: string;
 	visits: Record<string, Visit>;
 	layout: Layout;
-	groupBy: "repo" | "status" | "ci";
+	groupBy: "repo" | "status";
 	projects: Project[];
 	expanded: Record<string, boolean>;
 	projectsLoading: boolean;
@@ -112,7 +112,7 @@ interface AppState {
 	returnToProject: () => void;
 	setTab: (tab: string) => void;
 	setLayout: (layout: Partial<Layout>) => void;
-	setGroupBy: (g: "repo" | "status" | "ci") => void;
+	setGroupBy: (g: "repo" | "status") => void;
 	setWorkItemFocus: (f: AppState["workItemFocus"]) => void;
 	toggleProject: (pid: string) => void;
 	setCloneProgress: (s: string | null) => void;
@@ -279,7 +279,9 @@ export const useStore = create<AppState>((set, get) => ({
 		}),
 	setGroupBy: (groupBy) => set({ groupBy }),
 	toggleProject: (pid) =>
-		set((s) => ({ expanded: { ...s.expanded, [pid]: !s.expanded[pid] } })),
+		set((s) => ({
+			expanded: { ...s.expanded, [pid]: !(s.expanded[pid] ?? true) },
+		})),
 	setCloneProgress: (cloneProgress) => set({ cloneProgress }),
 	toast: (toastMsg) => {
 		set({ toastMsg });

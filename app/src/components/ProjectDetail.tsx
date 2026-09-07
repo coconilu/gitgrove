@@ -270,7 +270,9 @@ function Worktrees({ p }: { p: Project }) {
 							<div className="worktree-meta">
 								{abText(c.ahead, c.behind)}
 								<LinkBadge p={p} c={c} link={c.linkedWorkItem} />
-								{p.providerIdentity && <CiBadge status={ci[c.id]} />}
+								{p.providerIdentity && (
+									<CiBadge status={ci[c.id]} branch={c.branch} />
+								)}
 							</div>
 						</div>
 						<button className="btn" onClick={() => enter(c.id)}>
