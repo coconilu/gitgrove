@@ -1,6 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { addLocalFolder, CheckoutActions } from "./components/CheckoutActions";
 import { Dialog, Toast } from "./components/Dialog";
 import FilePreview from "./components/FilePreview";
@@ -12,7 +11,9 @@ import ResizeHandle from "./components/ResizeHandle";
 import { ResourceState } from "./components/ResourceState";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar from "./components/Sidebar";
+import { UpdateToast } from "./components/UpdateControls";
 import { activeCheckout, useStore } from "./store";
+import { updates } from "./useUpdates";
 
 export default function App() {
 	const {
@@ -31,11 +32,7 @@ export default function App() {
 		projectsLoading,
 		refreshProjects,
 	} = useStore();
-	const [update, setUpdate] = useState<Update | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
-	const [updateState, setUpdateState] = useState<"idle" | "busy" | "error">(
-		"idle",
-	);
 
 	useEffect(() => {
 		init();
@@ -47,33 +44,15 @@ export default function App() {
 		};
 	}, [init, setCloneProgress]);
 
-	// 启动时检查一次更新，此后每 30 分钟轮询；离线或检查失败不打扰用户
 	useEffect(() => {
-		let cancelled = false;
-		const run = () =>
-			check()
-				.then((u) => {
-					if (!cancelled && u) setUpdate(u);
-				})
-				.catch(() => {});
-		run();
-		const timer = setInterval(run, 30 * 60 * 1000);
-		return () => {
-			cancelled = true;
-			clearInterval(timer);
-		};
+		void updates.loadVersion();
+		void updates.checkForUpdates();
+		const timer = setInterval(
+			() => void updates.checkForUpdates(),
+			30 * 60 * 1000,
+		);
+		return () => clearInterval(timer);
 	}, []);
-
-	// Windows NSIS：下载完成后安装器接管，自动关闭并重启到新版本
-	const installUpdate = useCallback(async () => {
-		if (!update) return;
-		setUpdateState("busy");
-		try {
-			await update.downloadAndInstall();
-		} catch {
-			setUpdateState("error");
-		}
-	}, [update]);
 
 	const selectedCheckout = activeCheckout(projects, sel);
 	const selectedCid = selectedCheckout?.c.id;
@@ -99,12 +78,19 @@ export default function App() {
 		return (
 			<div className="app">
 				<LoginScreen />
+				<button
+					type="button"
+					className="btn login-settings"
+					aria-label="打开配置"
+					onClick={() => setSettingsOpen(true)}
+				>
+					配置
+				</button>
+				{settingsOpen && (
+					<SettingsDialog onClose={() => setSettingsOpen(false)} />
+				)}
 				<Toast />
-				<UpdateToast
-					update={update}
-					state={updateState}
-					onInstall={installUpdate}
-				/>
+				<UpdateToast />
 			</div>
 		);
 
@@ -257,43 +243,7 @@ export default function App() {
 			{settingsOpen && (
 				<SettingsDialog onClose={() => setSettingsOpen(false)} />
 			)}
-			<UpdateToast
-				update={update}
-				state={updateState}
-				onInstall={installUpdate}
-			/>
-		</div>
-	);
-}
-
-function UpdateToast({
-	update,
-	state,
-	onInstall,
-}: {
-	update: Update | null;
-	state: "idle" | "busy" | "error";
-	onInstall: () => void;
-}) {
-	if (!update) return null;
-	return (
-		<div className="update-toast">
-			<div className="update-toast-text">
-				发现新版本 <b>v{update.version}</b>（当前 v{update.currentVersion}）
-				{state === "busy" && (
-					<div className="update-toast-sub">正在下载更新…</div>
-				)}
-				{state === "error" && (
-					<div className="update-toast-sub error">下载失败，请重试</div>
-				)}
-			</div>
-			<button
-				className="btn primary"
-				onClick={onInstall}
-				disabled={state === "busy"}
-			>
-				立即更新
-			</button>
+			<UpdateToast />
 		</div>
 	);
 }
