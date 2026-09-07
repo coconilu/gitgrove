@@ -1,8 +1,10 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
 import type { Project, RepoInfo } from "../types";
+import IconButton from "./IconButton";
 import { OpenInMenu } from "./OpenInMenu";
 import { ResourceState } from "./ResourceState";
 
@@ -85,13 +87,13 @@ export default function MyGitHub() {
 					<strong>{s.auth?.login}</strong>
 					<div className="muted">已连接 GitHub</div>
 				</div>
-				<button
-					className="btn"
+				<IconButton
+					label="刷新仓库"
+					icon={RefreshCw}
+					busy={s.reposLoading}
 					disabled={s.reposLoading}
 					onClick={() => s.refreshMyRepos()}
-				>
-					刷新仓库
-				</button>
+				/>
 				<button
 					className="btn"
 					onClick={async () => {

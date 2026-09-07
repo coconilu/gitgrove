@@ -8,7 +8,7 @@
 	--border: #30363d;
 	--border-soft: #21262d;
 	--text: #e6edf3;
-	--muted: #8b949e;
+	--muted: #9ba6b3;
 	--faint: #6e7681;
 	--accent: #2f81f7;
 	--accent-soft: rgba(47, 129, 247, 0.15);
@@ -919,13 +919,13 @@ button:disabled {
 	color: var(--muted);
 }
 .sub {
-	font-size: 12px;
+	font-size: 13px;
 	margin-top: 4px;
 	overflow-wrap: anywhere;
 }
 .path-text {
 	overflow-wrap: anywhere;
-	font-size: 12px;
+	font-size: 13px;
 }
 .grow {
 	flex: 1;
@@ -1052,7 +1052,7 @@ button:disabled {
 .checkout-meta {
 	display: block;
 	color: var(--muted);
-	font-size: 11px;
+	font-size: 12px;
 	margin-top: 2px;
 }
 .checkout-badges {
@@ -1136,7 +1136,7 @@ button:disabled {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	font-size: 12px;
+	font-size: 13px;
 	margin-top: 3px;
 }
 .checkout-actions {
@@ -1851,5 +1851,106 @@ button:disabled {
 @media (max-width: 560px) {
 	.launch-options.editor {
 		grid-template-columns: 1fr;
+	}
+}
+
+/* Lightweight tools keep the visual emphasis on named business actions. */
+.icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 34px;
+	width: 34px;
+	height: 34px;
+	min-width: 34px;
+	min-height: 34px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	color: var(--muted);
+	background: transparent;
+}
+.icon-button:hover:not(:disabled),
+.icon-button:focus-visible {
+	color: var(--text);
+	background: var(--panel-2);
+}
+.icon-button[aria-expanded="true"] {
+	color: #79b8ff;
+	background: var(--accent-soft);
+	border-color: #2f81f750;
+}
+.icon-button[aria-busy="true"] svg {
+	animation: tool-spin 1s linear infinite;
+}
+@keyframes tool-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+.tool-hint {
+	position: fixed;
+	z-index: 100;
+	max-width: 184px;
+	padding: 6px 9px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel-2);
+	color: var(--text);
+	box-shadow: 0 4px 12px #0006;
+	font-size: 12px;
+	line-height: 1.5;
+	pointer-events: none;
+	overflow-wrap: anywhere;
+}
+.open-in-trigger {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+}
+.open-in-trigger svg {
+	flex: none;
+}
+.open-in-trigger[aria-expanded="true"] svg {
+	transform: rotate(180deg);
+}
+.current-checkout {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+	color: #79b8ff;
+	font-size: 13px;
+	white-space: nowrap;
+}
+.current-checkout::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
+.worktree-row > .btn,
+.branch-row > .btn {
+	flex-shrink: 0;
+}
+.worktree-row strong,
+.branch-row strong {
+	overflow-wrap: anywhere;
+}
+.branch-row .btn.sm {
+	min-height: 32px;
+}
+.worktree-meta {
+	font-size: 13px;
+}
+.file-panel-foot,
+.launch-path {
+	font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+	.icon-button[aria-busy="true"] svg {
+		animation: none;
 	}
 }

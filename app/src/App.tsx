@@ -1,9 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
+import { PanelLeft, PanelRight, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { addLocalFolder, CheckoutActions } from "./components/CheckoutActions";
 import { Dialog, Toast } from "./components/Dialog";
 import FilePreview from "./components/FilePreview";
 import FileTreePanel from "./components/FileTreePanel";
+import IconButton from "./components/IconButton";
 import LoginScreen from "./components/LoginScreen";
 import MyGitHub from "./components/MyGitHub";
 import ProjectDetail, { ProjectTabs } from "./components/ProjectDetail";
@@ -78,14 +80,13 @@ export default function App() {
 		return (
 			<div className="app">
 				<LoginScreen />
-				<button
+				<IconButton
+					label="打开设置"
+					icon={Settings}
 					type="button"
-					className="btn login-settings"
-					aria-label="打开配置"
+					className="login-settings"
 					onClick={() => setSettingsOpen(true)}
-				>
-					配置
-				</button>
+				/>
 				{settingsOpen && (
 					<SettingsDialog onClose={() => setSettingsOpen(false)} />
 				)}
@@ -134,27 +135,13 @@ export default function App() {
 			)}
 			<main className="main">
 				<header className="workspace-header">
-					<button
-						className="btn sidebar-toggle"
-						aria-label={layout.sidebarOpen ? "收起项目面板" : "显示项目面板"}
-						title={layout.sidebarOpen ? "收起项目面板" : "显示项目面板"}
+					<IconButton
+						icon={PanelLeft}
+						label={layout.sidebarOpen ? "收起项目面板" : "显示项目面板"}
 						aria-expanded={layout.sidebarOpen}
+						aria-controls="project-sidebar"
 						onClick={() => setLayout({ sidebarOpen: !layout.sidebarOpen })}
-					>
-						<svg
-							width="20"
-							height="20"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							aria-hidden="true"
-							focusable="false"
-						>
-							<path d="M4 6h16M4 12h16M4 18h16" />
-						</svg>
-					</button>
+					/>
 					<div className="workspace-identity">
 						<strong>
 							{view === "github"
@@ -174,23 +161,20 @@ export default function App() {
 						<CheckoutActions p={hit.p} c={hit.c} />
 					)}
 					{view === "projects" && (
-						<button
-							className={"btn sm" + (layout.filesOpen ? " active" : "")}
+						<IconButton
+							icon={PanelRight}
+							label={layout.filesOpen ? "收起文件面板" : "显示文件面板"}
 							disabled={!hit}
 							aria-expanded={layout.filesOpen}
-							aria-label={layout.filesOpen ? "收起文件面板" : "显示文件面板"}
+							aria-controls="file-panel"
 							onClick={() => setLayout({ filesOpen: !layout.filesOpen })}
-						>
-							文件
-						</button>
+						/>
 					)}
-					<button
-						className="btn sm"
-						aria-label="打开配置"
+					<IconButton
+						label="打开设置"
+						icon={Settings}
 						onClick={() => setSettingsOpen(true)}
-					>
-						配置
-					</button>
+					/>
 				</header>
 				{view === "github" ? (
 					<MyGitHub />

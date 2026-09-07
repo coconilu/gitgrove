@@ -1,8 +1,10 @@
+import { RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { fileIconUrl, folderIconUrl } from "../fileIcons";
 import { activeCheckout, useStore } from "../store";
 import type { DirEntry } from "../types";
+import IconButton from "./IconButton";
 import { ResourceState } from "./ResourceState";
 
 type Menu = {
@@ -261,27 +263,24 @@ export default function FileTreePanel() {
 		setMenu(null);
 	};
 	return (
-		<aside className="ctx" aria-label="当前工作树文件">
+		<aside id="file-panel" className="ctx" aria-label="当前工作树文件">
 			<div className="file-panel-heading">
 				<strong>文件</strong>
 				<div className="ops">
-					<button
-						className="btn sm"
-						aria-label="刷新文件"
+					<IconButton
+						label="刷新文件"
+						icon={RefreshCw}
+						busy={loading}
 						onClick={() => {
 							setRevision((n) => n + 1);
 							void refreshStatusMap(hit.c);
 						}}
-					>
-						刷新
-					</button>
-					<button
-						className="btn sm"
-						aria-label="关闭文件面板"
+					/>
+					<IconButton
+						label="关闭文件面板"
+						icon={X}
 						onClick={() => setLayout({ filesOpen: false })}
-					>
-						关闭
-					</button>
+					/>
 				</div>
 			</div>
 			<div className="file-root path-text">{path}</div>

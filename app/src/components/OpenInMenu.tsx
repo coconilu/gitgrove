@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import * as api from "../api";
@@ -89,13 +90,14 @@ export function OpenInMenu({ path }: { path: string }) {
 			}}
 		>
 			<button
-				className="btn primary"
+				className="btn primary open-in-trigger"
 				ref={trigger}
 				aria-expanded={open}
 				title={path}
 				onClick={() => setOpen(!open)}
 			>
 				{target ? `正在打开 ${labels[target]}…` : "在…中打开"}
+				<ChevronDown size={16} aria-hidden="true" focusable="false" />
 			</button>
 			{open && (
 				<div

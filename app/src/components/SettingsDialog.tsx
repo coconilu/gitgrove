@@ -1,7 +1,9 @@
+import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
 import type { LaunchApp, LaunchPreferences } from "../types";
+import IconButton from "./IconButton";
 import { AboutPanel } from "./UpdateControls";
 
 export default function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -217,14 +219,13 @@ export default function SettingsDialog({ onClose }: { onClose: () => void }) {
 						<h4>默认打开方式</h4>
 						<p className="msg">设置所有项目的默认打开方式。</p>
 					</div>
-					<button
-						type="button"
-						className="btn sm"
-						disabled={scanning || busy}
+					<IconButton
+						label="重新检测编辑器与终端"
+						icon={RefreshCw}
+						busy={scanning}
+						disabled={busy}
 						onClick={() => void scan()}
-					>
-						{scanning ? "检测中…" : "重新检测"}
-					</button>
+					/>
 				</div>
 				{choiceGroup("editor", "默认编辑器")}
 				{choiceGroup("terminal", "默认终端")}

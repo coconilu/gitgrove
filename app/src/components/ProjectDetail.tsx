@@ -1,11 +1,13 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { RefreshCw } from "lucide-react";
 import { marked } from "marked";
 import { useEffect, useState } from "react";
 import * as api from "../api";
 import { ciStatus, TAB_LABELS, TABS } from "../navigation";
-import { useStore } from "../store";
+import { activeCheckout, useStore } from "../store";
 import type { CiStatus, IssueInfo, PrInfo, Project, RunInfo } from "../types";
 import { abText, CiBadge, LinkBadge, newWorktree } from "./CheckoutActions";
+import IconButton from "./IconButton";
 import { relTime } from "./MyGitHub";
 import { ResourceState, useResource } from "./ResourceState";
 
@@ -101,17 +103,17 @@ function Overview({ p }: { p: Project }) {
 					<h2>{gh ? gh.owner + "/" + gh.repo : p.name}</h2>
 					<p className="muted path-text">{p.localPath}</p>
 				</div>
-				<button
-					className="btn"
+				<IconButton
+					label="刷新概览"
+					icon={RefreshCw}
+					busy={issues.loading || prs.loading || run.loading || readme.loading}
 					onClick={() => {
 						issues.reload();
 						prs.reload();
 						run.reload();
 						readme.reload();
 					}}
-				>
-					刷新概览
-				</button>
+				/>
 			</div>
 			<div className="stat-row">
 				<button className="stat" onClick={() => setTab("Worktrees & Branches")}>
@@ -214,7 +216,9 @@ function Overview({ p }: { p: Project }) {
 	);
 }
 function Worktrees({ p }: { p: Project }) {
-	const { ci, setSel, setView, sel, refreshProjects, toast } = useStore();
+	const { ci, setSel, setView, sel, projectsLoading, refreshProjects, toast } =
+		useStore();
+	const currentCid = activeCheckout([p], sel)?.c.id;
 	const branches = useResource(p.id + ":branches", () =>
 		api.listBranches(p.id),
 	);
@@ -232,15 +236,15 @@ function Worktrees({ p }: { p: Project }) {
 					<p className="muted">每个工作树有独立目录；选中后使用顶部操作。</p>
 				</div>
 				<div className="ops">
-					<button
-						className="btn"
+					<IconButton
+						label="刷新工作树与分支"
+						icon={RefreshCw}
+						busy={branches.loading || projectsLoading}
 						onClick={() => {
 							branches.reload();
 							void refreshProjects();
 						}}
-					>
-						刷新
-					</button>
+					/>
 					<button className="btn primary" onClick={() => newWorktree(p)}>
 						新建工作树
 					</button>
@@ -255,8 +259,7 @@ function Worktrees({ p }: { p: Project }) {
 				{p.checkouts.map((c) => (
 					<div
 						className={
-							"worktree-row" +
-							(sel?.kind === "checkout" && sel.cid === c.id ? " selected" : "")
+							"worktree-row" + (currentCid === c.id ? " selected" : "")
 						}
 						key={c.id}
 					>
@@ -275,11 +278,13 @@ function Worktrees({ p }: { p: Project }) {
 								)}
 							</div>
 						</div>
-						<button className="btn" onClick={() => enter(c.id)}>
-							{sel?.kind === "checkout" && sel.cid === c.id
-								? "当前工作树"
-								: "进入工作树"}
-						</button>
+						{currentCid === c.id ? (
+							<span className="current-checkout">当前使用</span>
+						) : (
+							<button className="btn" onClick={() => enter(c.id)}>
+								进入工作树
+							</button>
+						)}
 					</div>
 				))}
 			</div>
@@ -318,7 +323,9 @@ function Worktrees({ p }: { p: Project }) {
 									</div>
 								</div>
 								{abText(b.ahead, b.behind)}
-								{!b.remote && (
+								{checkout?.id === currentCid && checkout ? (
+									<span className="current-checkout">当前使用</span>
+								) : !b.remote ? (
 									<button
 										className="btn sm"
 										disabled={Boolean(busy)}
@@ -354,7 +361,7 @@ function Worktrees({ p }: { p: Project }) {
 												? "进入已有工作树"
 												: "创建工作树"}
 									</button>
-								)}
+								) : null}
 							</div>
 						);
 					})}
@@ -438,15 +445,15 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 							: "查看变更，进入独立工作树审查。"}
 					</p>
 				</div>
-				<button
-					className="btn"
+				<IconButton
+					label={kind === "issue" ? "刷新 Issues" : "刷新 Pull Requests"}
+					icon={RefreshCw}
+					busy={items.loading || checks.loading}
 					onClick={() => {
 						items.reload();
 						checks.reload();
 					}}
-				>
-					刷新
-				</button>
+				/>
 			</div>
 			<div className="list-tools">
 				<input
@@ -699,16 +706,16 @@ function Actions({ p }: { p: Project }) {
 						查看运行结果和日志，按需触发支持手动运行的流程。
 					</p>
 				</div>
-				<button
-					className="btn"
+				<IconButton
+					label="刷新 Actions"
+					icon={RefreshCw}
+					busy={workflows.loading || runs.loading || details.loading}
 					onClick={() => {
 						workflows.reload();
 						runs.reload();
 						details.reload();
 					}}
-				>
-					刷新
-				</button>
+				/>
 			</div>
 			{workflows.loading || workflows.error ? (
 				<ResourceState
