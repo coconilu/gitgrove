@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
 import type { LaunchApp, LaunchPreferences } from "../types";
+import { AboutPanel } from "./UpdateControls";
 
 export default function SettingsDialog({ onClose }: { onClose: () => void }) {
 	const ref = useRef<HTMLDialogElement>(null);
+	const [panel, setPanel] = useState<"general" | "about">("general");
 	const busyRef = useRef(false);
 	const mounted = useRef(false);
 	const detecting = useRef(false);
@@ -179,7 +181,32 @@ export default function SettingsDialog({ onClose }: { onClose: () => void }) {
 				if (!busyRef.current) onClose();
 			}}
 		>
+			<h3 id="settings-title">配置</h3>
+			<p id="settings-description" className="msg">
+				管理默认打开方式与应用更新。
+			</p>
+			<nav className="settings-nav" aria-label="配置分组">
+				<button
+					type="button"
+					className="btn"
+					aria-pressed={panel === "general"}
+					disabled={busy}
+					onClick={() => setPanel("general")}
+				>
+					常规
+				</button>
+				<button
+					type="button"
+					className="btn"
+					aria-pressed={panel === "about"}
+					disabled={busy}
+					onClick={() => setPanel("about")}
+				>
+					关于
+				</button>
+			</nav>
 			<form
+				hidden={panel !== "general"}
 				onSubmit={(e) => {
 					e.preventDefault();
 					void save();
@@ -187,10 +214,8 @@ export default function SettingsDialog({ onClose }: { onClose: () => void }) {
 			>
 				<div className="settings-heading">
 					<div>
-						<h3 id="settings-title">配置</h3>
-						<p id="settings-description" className="msg">
-							设置所有项目的默认打开方式。
-						</p>
+						<h4>默认打开方式</h4>
+						<p className="msg">设置所有项目的默认打开方式。</p>
 					</div>
 					<button
 						type="button"
@@ -244,6 +269,21 @@ export default function SettingsDialog({ onClose }: { onClose: () => void }) {
 					</button>
 				</div>
 			</form>
+			{panel === "about" && (
+				<>
+					<AboutPanel />
+					<div className="ops">
+						<button
+							type="button"
+							className="btn"
+							disabled={busy}
+							onClick={onClose}
+						>
+							关闭
+						</button>
+					</div>
+				</>
+			)}
 		</dialog>
 	);
 }
