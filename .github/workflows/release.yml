@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "patch/minor/major 准备版本 PR；none 发布已通过 CI 的当前版本"
+        description: "版本增量（自动检查、构建并发布；none 重试当前版本）"
         required: true
         default: patch
         type: choice
@@ -27,9 +27,13 @@ jobs:
   prepare:
     if: github.event_name == 'workflow_dispatch' && inputs.bump != 'none'
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     permissions:
       contents: write
       pull-requests: write
+      actions: write
+    outputs:
+      sha: ${{ steps.prepare.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -37,22 +41,26 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Prepare version pull request
+      - name: Bump version, run CI and merge automatically
+        id: prepare
         env:
           BUMP: ${{ inputs.bump }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/prepare-release.mjs
 
   version:
+    needs: prepare
     if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.bump == 'none') ||
+      always() && !cancelled() && (
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.bump == 'none' || needs.prepare.result == 'success')) ||
       github.event_name == 'issues' ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == github.event.repository.default_branch &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.path == '.github/workflows/ci.yml')
+       github.event.workflow_run.path == '.github/workflows/ci.yml'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -76,12 +84,13 @@ jobs:
         id: target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREPARED_SHA: ${{ needs.prepare.outputs.sha }}
         run: node .github/scripts/release-target.mjs
 
   # 双平台构建：Windows NSIS 安装包 + macOS DMG（未做 Apple 签名/公证）
   build:
     needs: version
-    if: needs.version.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.version.result == 'success' && needs.version.outputs.publish == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -156,6 +165,7 @@ jobs:
   # 汇总双平台产物，生成 updater manifest 并发布 Release
   publish:
     needs: [version, build]
+    if: ${{ !cancelled() && needs.version.result == 'success' && needs.build.result == 'success' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest

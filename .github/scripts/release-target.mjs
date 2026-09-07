@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export function releaseTarget(eventName, event, sha, ref) {
+export function releaseTarget(eventName, event, sha, ref, preparedSha) {
 	const branch = event.repository.default_branch;
 	let target = sha;
 	let prerelease = false;
@@ -20,7 +20,12 @@ export function releaseTarget(eventName, event, sha, ref) {
 	} else if (eventName === "workflow_dispatch") {
 		if (ref !== "refs/heads/" + branch)
 			throw new Error("请从默认分支运行发布流程");
-		if (event.inputs.bump !== "none") return null;
+		if (event.inputs.bump !== "none") {
+			if (!["patch", "minor", "major"].includes(event.inputs.bump))
+				throw new Error("未知的版本增量");
+			if (!preparedSha) return null;
+			target = preparedSha;
+		}
 	} else if (eventName === "issues") {
 		if (event.action !== "closed" || event.issue.state_reason !== "completed")
 			return null;
@@ -72,6 +77,7 @@ async function main() {
 		event,
 		process.env.GITHUB_SHA,
 		process.env.GITHUB_REF,
+		process.env.PREPARED_SHA,
 	);
 	const output = (values) => {
 		for (const [key, value] of Object.entries(values))

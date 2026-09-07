@@ -43,7 +43,7 @@ for (const patch of [
 		);
 	});
 }
-test("手动升级版本只准备 PR，none 才进入发布", () => {
+test("手动升级版本等待自动准备结果，随后发布合并提交；none 使用触发提交", () => {
 	assert.equal(
 		releaseTarget(
 			"workflow_dispatch",
