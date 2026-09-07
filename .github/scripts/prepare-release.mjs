@@ -5,7 +5,9 @@ import {
 	completeVersionRelease,
 	mergeVersionPR,
 	runCI,
+	runPullRequestCI,
 } from "./release-ci.mjs";
+import { createGitHubAPI } from "./release-github.mjs";
 
 const VERSION_FILES = [
 	"app/package.json",
@@ -37,33 +39,7 @@ async function main() {
 	if (process.env.GITHUB_REF !== "refs/heads/" + branch)
 		throw new Error("请从默认分支运行发布流程");
 	if (!/^\d+$/.test(runId ?? "")) throw new Error("缺少有效的发布运行 ID");
-	const api = async (
-		endpoint,
-		{ method = "GET", body, missing = false } = {},
-	) => {
-		const response = await fetch(
-			"https://api.github.com/repos/" + repo + endpoint,
-			{
-				method,
-				headers: {
-					Authorization: "Bearer " + process.env.GH_TOKEN,
-					Accept: "application/vnd.github+json",
-					"Content-Type": "application/json",
-				},
-				body: body ? JSON.stringify(body) : undefined,
-				signal: AbortSignal.timeout(30_000),
-			},
-		);
-		if (response.status === 404 && missing) return null;
-		if (!response.ok) {
-			const error = new Error(
-				"GitHub " + endpoint + ": HTTP " + response.status,
-			);
-			error.status = response.status;
-			throw error;
-		}
-		return response.status === 204 ? null : response.json();
-	};
+	const api = createGitHubAPI(repo, process.env.GH_TOKEN);
 	const summary = (message) => {
 		console.log(message);
 		appendFileSync(process.env.GITHUB_STEP_SUMMARY, message + "\n\n");
@@ -147,6 +123,7 @@ async function main() {
 		throw new Error("版本 PR 的提交发生变化，停止发布");
 	summary("版本 PR（自动处理）: " + pr.html_url);
 	const sha = await completeVersionRelease(pr, {
+		checkPR: (candidate) => runPullRequestCI(api, candidate),
 		check: (ref, commit) => runCI(api, ref, commit),
 		assertCurrent: async (ref, commit) => {
 			const current = await api("/git/ref/heads/" + ref);
