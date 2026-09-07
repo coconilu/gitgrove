@@ -1,4 +1,10 @@
-import type { CiStatus, Project, RunInfo, Selection } from "./types";
+import type {
+	CheckoutInfo,
+	CiStatus,
+	Project,
+	RunInfo,
+	Selection,
+} from "./types";
 
 export const TABS = [
 	"Overview",
@@ -98,4 +104,24 @@ export function worktreePath(localPath: string, branch: string) {
 			.replace(/^-|-$/g, "")
 			.slice(0, 40) || "wt";
 	return clean + ".worktrees/" + slug;
+}
+
+export function findCheckout(
+	projects: Project[],
+	cid: string,
+): { p: Project; c: CheckoutInfo } | null {
+	for (const p of projects)
+		for (const c of p.checkouts) if (c.id === cid) return { p, c };
+	return null;
+}
+export function activeCheckout(
+	projects: Project[],
+	sel: Selection | null,
+): { p: Project; c: CheckoutInfo } | null {
+	if (!sel) return null;
+	if (sel.kind === "checkout") return findCheckout(projects, sel.cid);
+	if (sel.kind === "file") return findCheckout(projects, sel.co);
+	const p = projects.find((x) => x.id === sel.pid);
+	const c = p?.checkouts.find((x) => x.isPrimary);
+	return p && c ? { p, c } : null;
 }

@@ -1,10 +1,12 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import * as api from "../api";
 import { selectionProject } from "../navigation";
 import { useStore } from "../store";
 import type { CheckoutInfo, Project } from "../types";
 import { addLocalFolder, LinkBadge } from "./CheckoutActions";
+import IconButton from "./IconButton";
 import { ResourceState } from "./ResourceState";
 
 export default function Sidebar() {
@@ -92,18 +94,17 @@ export default function Sidebar() {
 			(lanes[label] ??= []).push({ p, c });
 		}
 	return (
-		<aside className="sidebar" aria-label="项目导航">
+		<aside id="project-sidebar" className="sidebar" aria-label="项目导航">
 			<div className="sidebar-heading">
 				<strong>工作区</strong>
 				<div className="ops">
-					<button
-						className="btn sm"
-						aria-label="刷新项目"
+					<IconButton
+						label="刷新项目"
+						icon={RefreshCw}
+						busy={s.projectsLoading}
 						disabled={s.projectsLoading}
 						onClick={() => s.refreshProjects()}
-					>
-						刷新
-					</button>
+					/>
 				</div>
 			</div>
 			<nav className="side-nav" aria-label="全局导航">

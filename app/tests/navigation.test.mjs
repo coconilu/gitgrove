@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	activeCheckout,
 	ciStatus,
 	navigate,
 	previewParent,
@@ -104,4 +105,31 @@ test("工作树目标目录预览与后端 ASCII slug 规则一致", () => {
 		worktreePath("/repos/demo", "a".repeat(60)),
 		"/repos/demo.worktrees/" + "a".repeat(40),
 	);
+});
+
+test("当前工作树在项目入口、工作树选择、文件预览往返中保持一致", () => {
+	assert.equal(
+		activeCheckout(projects, { kind: "project", pid: "one" }).c.id,
+		"one-main",
+	);
+	const file = { kind: "file", co: "one-task", key: "one-task/README.md" };
+	assert.equal(activeCheckout(projects, file).c.id, "one-task");
+	assert.equal(activeCheckout(projects, previewParent(file)).c.id, "one-task");
+	assert.equal(
+		activeCheckout(projects, { kind: "checkout", cid: "two-main" }).c.id,
+		"two-main",
+	);
+	assert.equal(
+		activeCheckout(projects, {
+			kind: "file",
+			co: "deleted",
+			key: "deleted/README.md",
+		}),
+		null,
+	);
+	assert.equal(
+		activeCheckout(projects, { kind: "project", pid: "deleted" }),
+		null,
+	);
+	assert.equal(activeCheckout(projects, null), null);
 });
