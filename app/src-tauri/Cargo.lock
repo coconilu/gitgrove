@@ -1383,11 +1383,16 @@ dependencies = [
 name = "gitgrove"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "keyring",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

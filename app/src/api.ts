@@ -75,6 +75,9 @@ export const openInEditor = (path: string) =>
 	invoke<void>("open_in_editor", { path });
 export const openInTerminal = (path: string) =>
 	invoke<void>("open_in_terminal", { path });
+export const agentOpenSupport = () => invoke<boolean>("agent_open_support");
+export const openInAgent = (path: string, agent: "codex" | "kimi") =>
+	invoke<{ message: string }>("open_in_agent", { path, agent });
 export const getLaunchPreferences = () =>
 	invoke<LaunchPreferences>("get_launch_preferences");
 export const saveLaunchPreferences = (preferences: LaunchPreferences) =>

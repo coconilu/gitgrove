@@ -599,20 +599,20 @@ tr:hover td {
 .wf.on {
 	background: var(--panel-2);
 }
-.run {
+.workflow-run {
 	display: flex;
 	align-items: center;
 	gap: 10px;
 	padding: 8px 10px;
 	border-bottom: 1px solid var(--border-soft);
 }
-.run:hover {
+.workflow-run:hover {
 	background: var(--panel);
 }
-.run .grow {
+.workflow-run .grow {
 	flex: 1;
 }
-.run .t {
+.workflow-run .t {
 	color: var(--faint);
 	font-size: 12px;
 }
@@ -1063,6 +1063,15 @@ button:disabled {
 	border-bottom: 1px solid var(--border);
 	background: var(--bg);
 }
+.sidebar-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+}
 .workspace-identity {
 	flex: 1;
 	min-width: 0;
@@ -1312,6 +1321,19 @@ button:disabled {
 .more-popover button:hover {
 	background: var(--border);
 }
+.open-in-popover {
+	width: 260px;
+}
+.open-in-popover p {
+	padding: 8px 10px;
+	margin: 0;
+	font-size: 12px;
+	white-space: normal;
+}
+.open-in-popover button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
 .danger-text {
 	color: var(--red);
 }
@@ -1441,12 +1463,12 @@ button:disabled {
 	font-size: 12px;
 	margin-bottom: 16px;
 }
-.run {
+.workflow-run {
 	gap: 12px;
 	padding: 14px;
 	align-items: center;
 }
-.run .ci-badge {
+.workflow-run .ci-badge {
 	margin-top: 8px;
 }
 .ctx {

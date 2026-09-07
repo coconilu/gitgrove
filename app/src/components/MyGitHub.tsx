@@ -3,6 +3,7 @@ import { useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
 import type { Project, RepoInfo } from "../types";
+import { OpenInMenu } from "./OpenInMenu";
 import { ResourceState } from "./ResourceState";
 
 export default function MyGitHub() {
@@ -185,6 +186,7 @@ export default function MyGitHub() {
 									</div>
 								</div>
 								<div className="ops">
+									{project && <OpenInMenu path={project.localPath} />}
 									<button
 										className="btn sm"
 										aria-label={"在 GitHub 打开 " + r.nameWithOwner}

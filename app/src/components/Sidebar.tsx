@@ -109,13 +109,6 @@ export default function Sidebar() {
 					>
 						刷新
 					</button>
-					<button
-						className="btn sm"
-						aria-label="收起项目面板"
-						onClick={() => s.setLayout({ sidebarOpen: false })}
-					>
-						收起
-					</button>
 				</div>
 			</div>
 			<nav className="side-nav" aria-label="全局导航">

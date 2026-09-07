@@ -149,12 +149,25 @@ export default function App() {
 			<main className="main">
 				<header className="workspace-header">
 					<button
-						className="btn sm"
+						className="btn sidebar-toggle"
 						aria-label={layout.sidebarOpen ? "收起项目面板" : "显示项目面板"}
+						title={layout.sidebarOpen ? "收起项目面板" : "显示项目面板"}
 						aria-expanded={layout.sidebarOpen}
 						onClick={() => setLayout({ sidebarOpen: !layout.sidebarOpen })}
 					>
-						项目
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							aria-hidden="true"
+							focusable="false"
+						>
+							<path d="M4 6h16M4 12h16M4 18h16" />
+						</svg>
 					</button>
 					<div className="workspace-identity">
 						<strong>

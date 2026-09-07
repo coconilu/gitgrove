@@ -1,9 +1,12 @@
+mod agents;
 mod fsx;
 mod git;
 mod github;
 mod launch;
 mod projects;
 mod store;
+#[cfg(windows)]
+mod window_theme;
 
 use std::sync::Mutex;
 
@@ -20,6 +23,16 @@ pub fn run() {
         .manage(AppState {
             token: Mutex::new(None),
             http: github::Http::new(),
+        })
+        .setup(|_app| {
+            #[cfg(windows)]
+            {
+                use tauri::Manager;
+                if let Some(window) = _app.get_webview_window("main") {
+                    window_theme::apply(&window);
+                }
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // 认证
@@ -49,6 +62,8 @@ pub fn run() {
             launch::get_launch_preferences,
             launch::save_launch_preferences,
             launch::discover_launch_apps,
+            agents::agent_open_support,
+            agents::open_in_agent,
             fsx::reveal_in_explorer,
             // issues / PRs
             github::list_issues,

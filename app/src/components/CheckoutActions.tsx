@@ -2,6 +2,7 @@ import * as api from "../api";
 import { CI_LABELS, worktreePath } from "../navigation";
 import { useStore } from "../store";
 import type { CheckoutInfo, LinkedWorkItem, Project } from "../types";
+import { OpenInMenu } from "./OpenInMenu";
 
 export function CiBadge({
 	status,
@@ -64,10 +65,6 @@ export function abText(ahead: number, behind: number) {
 export function useCoOps(p: Project) {
 	const { openDialog, refreshProjects, toast } = useStore();
 	return {
-		openEditor: (c: CheckoutInfo) =>
-			api.openInEditor(c.path).catch((e) => toast(String(e))),
-		openTerm: (c: CheckoutInfo) =>
-			api.openInTerminal(c.path).catch((e) => toast(String(e))),
 		del: (c: CheckoutInfo) =>
 			openDialog({
 				kind: "confirm",
@@ -131,12 +128,7 @@ export function CheckoutActions({ p, c }: { p: Project; c: CheckoutInfo }) {
 	const ops = useCoOps(p);
 	return (
 		<div className="checkout-actions">
-			<button className="btn primary" onClick={() => ops.openEditor(c)}>
-				编辑器
-			</button>
-			<button className="btn" onClick={() => ops.openTerm(c)}>
-				终端
-			</button>
+			<OpenInMenu key={c.path} path={c.path} />
 			{!c.isPrimary && (
 				<details className="more-menu">
 					<summary className="btn" aria-label={"更多工作树操作：" + c.branch}>

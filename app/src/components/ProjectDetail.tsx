@@ -167,7 +167,8 @@ function Overview({ p }: { p: Project }) {
 			<div className="card next-actions">
 				<strong>继续项目工作</strong>
 				<p className="muted">
-					选择工作树后，可从顶部打开编辑器、终端或文件面板。
+					通过顶部“在…中打开”进入 Codex、Kimi
+					Code、编辑器或终端；选择工作树后使用对应目录。
 				</p>
 				<div className="ops">
 					<button
@@ -782,7 +783,7 @@ function Actions({ p }: { p: Project }) {
 						) : (
 							<div className="run-list">
 								{runs.data.map((r) => (
-									<div className="run" key={r.id}>
+									<div className="workflow-run" key={r.id}>
 										<div className="grow">
 											<strong>
 												#{r.runNumber} · {r.branch}
