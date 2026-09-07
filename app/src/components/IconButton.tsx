@@ -24,6 +24,7 @@ export default function IconButton({
 	busy = false,
 	disabled,
 	className = "",
+	onClick,
 	...props
 }: Props) {
 	const id = useId();
@@ -75,6 +76,11 @@ export default function IconButton({
 				aria-describedby={hint ? id : undefined}
 				aria-busy={busy || undefined}
 				disabled={disabled || busy}
+				onClick={(event) => {
+					// Activation may move this control (for example, opening a side panel).
+					setHint(null);
+					onClick?.(event);
+				}}
 				onMouseEnter={showHint}
 				onMouseLeave={() => {
 					if (document.activeElement !== button.current) setHint(null);
