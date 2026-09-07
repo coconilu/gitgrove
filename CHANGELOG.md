@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0（2026-09-07）
+
+- feat: add dismissible updates and About settings (#8)
+- Merge pull request #6 from coconilu/codex/issue-4-open-in-agents
+- test: make parallel agent fixtures uniquely named
+- Merge remote-tracking branch 'origin/master' into codex/issue-4-open-in-agents
+- fix: verify Kimi TCP peer identity before sending credentials
+- fix: align window theme and isolate workspace controls
+- fix: restore open menu focus after launch failure
+- feat: open projects and worktrees in Codex and Kimi Code
+
 ## v0.1.2（2026-09-06）
 
 - Merge pull request #3 from coconilu/codex/editor-terminal-settings
