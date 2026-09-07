@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.3（2026-09-07）
+
+- Merge pull request #17 from coconilu/codex/issue-16-ui-polish
+- fix(ui): dismiss tool hints before layout-changing actions
+- feat(ui): polish tool buttons and active worktree state (#16)
+
 ## v1.0.2（2026-09-07）
 
 - fix: improve sidebar navigation and panel resizing (#14)
