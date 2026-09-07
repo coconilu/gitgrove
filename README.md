@@ -1,5 +1,5 @@
 <p align="center">
-	<img src="docs/assets/icon.png" width="96" alt="GitGrove logo" />
+	<img src="https://cdn.jsdelivr.net/gh/coconilu/gitgrove@master/docs/assets/icon.png" width="96" alt="GitGrove logo" />
 </p>
 
 <h1 align="center">GitGrove</h1>
@@ -21,7 +21,7 @@
 
 GitHub Desktop 把 worktree 当配角、不管 Actions；Orca 的 worktree 最强但定位是 AI agent 编排器，「GitHub 账号 → 我的仓库 → clone → worktree → issue/PR → CI」这条链路在一个应用里闭环的，目前还没有人做。GitGrove 就是来做这件事的。
 
-![项目总览](docs/assets/proto-home.png)
+![项目总览](https://cdn.jsdelivr.net/gh/coconilu/gitgrove@master/docs/assets/proto-home.png)
 
 ## 功能特性
 
@@ -37,7 +37,7 @@ GitHub Desktop 把 worktree 当配角、不管 Actions；Orca 的 worktree 最�
 
 | My GitHub 与一键 clone | Issues 表格与「开 worktree」 | Actions 面板 |
 | --- | --- | --- |
-| ![My GitHub](docs/assets/proto-github.png) | ![Issues](docs/assets/proto-issues.png) | ![Actions](docs/assets/proto-actions.png) |
+| ![My GitHub](https://cdn.jsdelivr.net/gh/coconilu/gitgrove@master/docs/assets/proto-github.png) | ![Issues](https://cdn.jsdelivr.net/gh/coconilu/gitgrove@master/docs/assets/proto-issues.png) | ![Actions](https://cdn.jsdelivr.net/gh/coconilu/gitgrove@master/docs/assets/proto-actions.png) |
 
 ## 下载安装
 
