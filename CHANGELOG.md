@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.2（2026-09-07）
+
+- fix: improve sidebar navigation and panel resizing (#14)
+
 ## v1.0.1（2026-09-07）
 
 - [修复] 自动批准并等待版本 PR 的实际 CI (#12)
