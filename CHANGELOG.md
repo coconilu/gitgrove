@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.4（2026-09-08）
+
+- Merge pull request #24 from coconilu/fix/markdown-local-images
+- fix: 本地 Markdown 预览支持相对路径图片
+- Merge pull request #23 from coconilu/docs/demo-gif
+- docs: add real-app demo GIF to README and landing page
+- Merge pull request #21 from coconilu/chore/license
+- chore: add MIT license
+- Merge pull request #20 from coconilu/docs/promotion
+- docs: add README, architecture/development docs and GitHub Pages landing
+
 ## v1.0.3（2026-09-07）
 
 - Merge pull request #17 from coconilu/codex/issue-16-ui-polish
