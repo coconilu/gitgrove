@@ -33,3 +33,24 @@ export function resolveLocalPath(baseDir: string, src: string): string {
 	}
 	return root + parts.join(sep);
 }
+
+// 在 HTML 字符串层面改写 <img> 的相对 src（React 19 重渲染会按引用比较
+// dangerouslySetInnerHTML 并重置 innerHTML，事后改 DOM 会被覆盖）
+const IMG_TAG_RE = /<img\b[^>]*?>/gi;
+const SRC_ATTR_RE = /\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i;
+
+export function rewriteLocalImages(
+	html: string,
+	baseDir: string,
+	toUrl: (absPath: string) => string,
+): string {
+	return html.replace(IMG_TAG_RE, (tag) => {
+		const m = SRC_ATTR_RE.exec(tag);
+		if (!m) return tag;
+		const src = m[2] ?? m[3] ?? m[4] ?? "";
+		if (!isLocalImageSrc(src)) return tag;
+		const url = toUrl(resolveLocalPath(baseDir, src));
+		const quote = m[1].startsWith("'") ? "'" : '"';
+		return tag.replace(SRC_ATTR_RE, `src=${quote}${url}${quote}`);
+	});
+}
