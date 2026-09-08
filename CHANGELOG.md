@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.5（2026-09-08）
+
+- Merge pull request #26 from coconilu/fix/markdown-images-html-rewrite
+- Merge branch 'master' into fix/markdown-images-html-rewrite
+- fix: Markdown 图片改写移到 HTML 字符串层面，修复重渲染后再次裂图
+
 ## v1.0.4（2026-09-08）
 
 - Merge pull request #24 from coconilu/fix/markdown-local-images
