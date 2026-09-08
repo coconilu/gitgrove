@@ -56,6 +56,7 @@ pub fn run() {
             fsx::read_dir,
             fsx::read_file_preview,
             fsx::checkout_status,
+            fsx::allow_asset_scope,
             fsx::trash_path,
             launch::open_in_editor,
             launch::open_in_terminal,

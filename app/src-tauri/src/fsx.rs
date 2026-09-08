@@ -59,6 +59,15 @@ pub fn checkout_status(path: String) -> Result<git::StatusMap, String> {
     git::status_porcelain(Path::new(&path))
 }
 
+// Markdown 预览里的相对路径图片走 asset protocol 加载，按目录收紧作用域
+#[tauri::command]
+pub fn allow_asset_scope(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri::Manager;
+    app.asset_protocol_scope()
+        .allow_directory(Path::new(&path), true)
+        .map_err(|e| format!("允许资源目录失败 {path}: {e}"))
+}
+
 #[tauri::command]
 pub fn trash_path(path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| format!("移入回收站失败: {e}"))

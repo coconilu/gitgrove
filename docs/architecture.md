@@ -38,7 +38,7 @@
 
 - `Sidebar.tsx`：项目 → checkout 两级列表，主 clone（`primary`）与 worktree 同一组件渲染，仅徽章不同；
 - `FileTreePanel.tsx`：右侧文件树，目录懒加载（展开才 `read_dir`），文件行带 M/A/D 角标；
-- `FilePreview.tsx` + marked：Markdown 预览；
+- `FilePreview.tsx` + `MarkdownView.tsx` + marked：Markdown 预览；相对路径图片基于文件所在目录解析，经 asset protocol（`convertFileSrc` + `allow_asset_scope` 按目录收紧作用域）加载本地文件；
 - `UpdateControls.tsx`：tauri-plugin-updater 封装（更新 Toast + About 面板），状态机逻辑在 `updates.ts`，有单测。
 
 `api.ts` 是对 `@tauri-apps/api/core` 的 `invoke` 薄封装，约 30 个命令分六组：认证、My GitHub、clone/项目、worktree/分支、文件系统、Issues/PRs/Actions。前后端类型经 serde camelCase 对齐（`types.ts`）。
@@ -51,7 +51,7 @@
 | `github.rs` | GitHub API：token 管理；仓库列表用 GraphQL 聚合（省 rate limit），issues/PRs/Actions 走 REST |
 | `projects.rs` | clone/add/list/remove 项目，worktree 增删锁，从 issue/PR 开 worktree，create_pr；clone 进度经事件推给前端 |
 | `git.rs` | 一律调用户 git 二进制（不绑 libgit2）；Windows 全部 `CREATE_NO_WINDOW`；`GIT_TERMINAL_PROMPT=0` 防挂起；token 以 `x-access-token` 注入 https URL |
-| `fsx.rs` | read_dir、read_file_preview、checkout_status、trash_path（回收站删除）、reveal_in_explorer |
+| `fsx.rs` | read_dir、read_file_preview、checkout_status、trash_path（回收站删除）、reveal_in_explorer、allow_asset_scope（Markdown 本地图片作用域） |
 | `store.rs` | `projects.json` 持久化、旧字段迁移、项目配色哈希 |
 | `launch.rs` | 探测已安装编辑器/终端、默认打开方式偏好、`open_in_editor/terminal/explorer` |
 | `agents.rs` + `agents/transport.rs` | Open in Agent（Codex / Kimi Code）。transport 是 Windows 专用 HTTP/1 传输：先经连接表核对对端进程 PID/映像/用户身份，确认后才在同一 socket 上发送凭证，详见 [open-in-agents.md](open-in-agents.md) |

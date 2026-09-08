@@ -1,6 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { RefreshCw } from "lucide-react";
-import { marked } from "marked";
 import { useEffect, useState } from "react";
 import * as api from "../api";
 import { ciStatus, TAB_LABELS, TABS } from "../navigation";
@@ -8,6 +7,7 @@ import { activeCheckout, useStore } from "../store";
 import type { CiStatus, IssueInfo, PrInfo, Project, RunInfo } from "../types";
 import { abText, CiBadge, LinkBadge, newWorktree } from "./CheckoutActions";
 import IconButton from "./IconButton";
+import MarkdownView from "./MarkdownView";
 import { relTime } from "./MyGitHub";
 import { ResourceState, useResource } from "./ResourceState";
 
@@ -200,13 +200,7 @@ function Overview({ p }: { p: Project }) {
 					onRetry={readme.reload}
 				/>
 			) : readme.data ? (
-				<div
-					className="card md"
-					// biome-ignore lint/security/noDangerouslySetInnerHtml: 现有本地 Markdown 预览行为
-					dangerouslySetInnerHTML={{
-						__html: marked.parse(readme.data) as string,
-					}}
-				/>
+				<MarkdownView text={readme.data} baseDir={p.localPath} />
 			) : (
 				<p className="muted">
 					项目尚未提供 README.md，可通过文件面板浏览源码。
