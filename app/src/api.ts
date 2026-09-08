@@ -69,6 +69,8 @@ export const readDir = (path: string) =>
 	invoke<DirEntry[]>("read_dir", { path });
 export const readFilePreview = (path: string) =>
 	invoke<FilePreview>("read_file_preview", { path });
+export const allowAssetScope = (path: string) =>
+	invoke<void>("allow_asset_scope", { path });
 export const checkoutStatus = (path: string) =>
 	invoke<StatusMap>("checkout_status", { path });
 export const openInEditor = (path: string) =>

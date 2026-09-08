@@ -1,7 +1,7 @@
-import { marked } from "marked";
 import * as api from "../api";
 import { TAB_LABELS } from "../navigation";
 import { findCheckout, useStore } from "../store";
+import MarkdownView from "./MarkdownView";
 import { ResourceState, useResource } from "./ResourceState";
 
 export default function FilePreview({
@@ -16,6 +16,8 @@ export default function FilePreview({
 	const rel = fkey.slice(co.length + 1);
 	const name = rel.split("/").pop() ?? rel;
 	const abs = hit ? hit.c.path + "/" + rel : null;
+	// Markdown 里相对图片基于文件所在目录解析
+	const baseDir = abs?.slice(0, abs.length - name.length).replace(/[\\/]$/, "");
 	const preview = useResource(fkey, () =>
 		abs ? api.readFilePreview(abs) : Promise.reject("工作树已不存在"),
 	);
@@ -53,13 +55,7 @@ export default function FilePreview({
 					detail="二进制文件可在外部编辑器中打开。"
 				/>
 			) : preview.data && name.toLowerCase().endsWith(".md") ? (
-				<div
-					className="card md"
-					// biome-ignore lint/security/noDangerouslySetInnerHtml: 现有本地 Markdown 预览行为
-					dangerouslySetInnerHTML={{
-						__html: marked.parse(preview.data.text) as string,
-					}}
-				/>
+				<MarkdownView text={preview.data.text} baseDir={baseDir ?? ""} />
 			) : (
 				<pre className="code">{preview.data?.text || "（空文件）"}</pre>
 			)}
