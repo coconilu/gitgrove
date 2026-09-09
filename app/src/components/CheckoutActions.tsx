@@ -141,7 +141,7 @@ export function CheckoutActions({ p, c }: { p: Project; c: CheckoutInfo }) {
 				key={c.path}
 				path={c.path}
 				githubUrl={
-					p.providerIdentity
+					p.providerIdentity?.provider === "github"
 						? `https://github.com/${p.providerIdentity.owner}/${p.providerIdentity.repo}`
 						: undefined
 				}

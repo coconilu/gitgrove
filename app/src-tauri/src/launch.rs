@@ -246,7 +246,7 @@ fn resolve_in(app: &AppSpec, dirs: &[PathBuf]) -> Option<PathBuf> {
             return Some(direct);
         }
         #[cfg(windows)]
-        if matches!(app.id, "vscode" | "cursor" | "git-bash") {
+        if matches!(app.id, "vscode" | "cursor" | "zcode" | "git-bash") {
             if let Some(parent) = dir.parent() {
                 let candidate = parent.join(app.executable);
                 if available_path(&candidate) {
