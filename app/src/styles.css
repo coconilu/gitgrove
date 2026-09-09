@@ -1406,6 +1406,12 @@ button:disabled {
 .ui-select-trigger[data-state="open"] .ui-select-icon {
 	transform: rotate(180deg);
 }
+/* 表单场景（Dialog 字段）与 .input 对齐字号/内边距。 */
+.field .ui-select-trigger {
+	width: 100%;
+	padding: 7px 10px;
+	font-size: 13px;
+}
 .ui-select-content {
 	z-index: 80;
 	min-width: var(--radix-select-trigger-width);

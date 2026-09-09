@@ -32,13 +32,7 @@ export function Dialog() {
 	if (!shown) return null;
 	return <DialogBody key={shown.title} open={!!dialog} dialog={shown} />;
 }
-function DialogBody({
-	open,
-	dialog,
-}: {
-	open: boolean;
-	dialog: DialogState;
-}) {
+function DialogBody({ open, dialog }: { open: boolean; dialog: DialogState }) {
 	const contentRef = useRef<HTMLDivElement>(null);
 	const busyRef = useRef(false);
 	const [value, setValue] = useState(dialog.defaultValue ?? "");
