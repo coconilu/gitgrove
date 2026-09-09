@@ -49,10 +49,10 @@
 项目详情页的 **Projects** 页签列出仓库 owner（user 或 org）名下的 Projects V2，选择某个 project 后只读展示：
 
 - **表格视图**：行为 item，列为 project 的自定义字段（当前仅 Status 列有值，其余字段值待后端补充）；
-- **看板视图**：按 `Status` 单选字段分列（无 Status 时回退到第一个单选字段，并提示可切回表格）；
+- **看板视图**：按 `Status` 单选字段分列（条目只携带 Status 字段值；无 Status 字段时提示切回表格，不回退到其他单选字段）；
 - 条目点击：属于当前仓库的 issue/PR 跳转到应用内 Issues / Pull Requests 页签并聚焦（`workItemFocus`），跨仓库条目在外部浏览器打开；draft issue 无对应页面，展示「草稿」标识且不可点击。
 
-后端 `projects_v2.rs` 走 GraphQL：`list_projects_v2`（owner 为空走 viewer，ownerType 不给时同查 user/org 两路径）与 `get_project_v2`（按 project node id 读 fields + items，内存缓存 5 分钟，`refresh=true` 强制刷新）。
+后端 `projects_v2.rs` 走 GraphQL：`list_projects_v2`（owner 为空走 viewer，ownerType 不给时同查 user/org 两路径）与 `get_project_v2`（按 project node id 读 fields + items，内存缓存 5 分钟，`refresh=true` 强制刷新）。items 翻页上限 500 条，未拉全时 `ProjectV2Board.truncated=true`，面板提示「仅显示前 N 条（共 totalCount 条）」。
 
 认证前置：Projects V2 只接受 **classic PAT 勾选 `project` scope**（fine-grained PAT 不支持用户个人 project）。scope 在 token 生成时固定，老 token 无法追加，因此后端在权限不足时抛出 `MISSING_PROJECT_SCOPE:` 前缀的 typed error（`api.isMissingProjectScope` 判定），且登录后在 `AuthState.hasProjectScope` 暴露 scope 检测结果（null = 无法判断，如 fine-grained PAT）。前端据此展示重新授权引导：说明原因、分步指引、直达 https://github.com/settings/tokens ，并支持就地粘贴新 token（复用 `login_pat`）后重试。GraphQL 查询成本较高，面板不做轮询，只随页签进入和手动刷新加载。
 

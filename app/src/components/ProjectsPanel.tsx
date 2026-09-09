@@ -1,6 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
 import type { Project, ProjectV2Field, ProjectV2Item } from "../types";
@@ -27,8 +27,9 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 	const [selected, setSelected] = useState<number | null>(null);
 	const [view, setView] = useState<"table" | "board">("table");
 	const [force, setForce] = useState(0);
+	// 手动选择优先（含已关闭 project）；默认取第一个未关闭的。
 	const current =
-		projects.data?.find((x) => x.number === selected && !x.closed) ??
+		projects.data?.find((x) => x.number === selected) ??
 		projects.data?.find((x) => !x.closed) ??
 		projects.data?.[0];
 	const details = useResource(
@@ -36,6 +37,10 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 		() =>
 			current ? api.getProjectV2(current.id, force > 0) : Promise.resolve(null),
 	);
+	// force 是一次性刷新信号：本次加载结束后复位，避免后续切换 project 持续绕过缓存。
+	useEffect(() => {
+		if (force > 0 && !details.loading) setForce(0);
+	}, [force, details.loading]);
 	if (!gh)
 		return (
 			<ResourceState
@@ -48,12 +53,17 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 		setForce((n) => n + 1);
 		details.reload();
 	};
+	// 授权引导里的重试需要先刷新登录态，否则 hasProjectScope===false 时永远回到引导页。
+	const retryReauth = async () => {
+		await s.reloadAuth();
+		retry();
+	};
 	// 登录时已确认 token 缺少 project scope（false；null 为无法判断），直接展示引导。
-	if (hasProjectScope === false) return <ReauthGuide onRetry={retry} />;
+	if (hasProjectScope === false) return <ReauthGuide onRetry={retryReauth} />;
 	const scopeError = [projects.error, details.error].find((e) =>
 		api.isMissingProjectScope(e),
 	);
-	if (scopeError) return <ReauthGuide onRetry={retry} />;
+	if (scopeError) return <ReauthGuide onRetry={retryReauth} />;
 	if (projects.loading || projects.error)
 		return (
 			<ResourceState
@@ -114,7 +124,10 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 					className="input"
 					aria-label="选择 Project"
 					value={current?.number ?? ""}
-					onChange={(e) => setSelected(Number(e.target.value))}
+					onChange={(e) => {
+						setSelected(Number(e.target.value));
+						setForce(0);
+					}}
 				>
 					{projects.data.map((x) => (
 						<option key={x.id} value={x.number}>
@@ -159,19 +172,29 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 					title="该 Project 暂无条目"
 					detail="在 GitHub 网页端把 Issue / PR 加入 Project 后会显示在这里。"
 				/>
-			) : view === "table" ? (
-				<TableView
-					fields={details.data.fields}
-					items={details.data.items}
-					onOpen={openItem}
-				/>
 			) : (
-				<BoardView
-					fields={details.data.fields}
-					items={details.data.items}
-					onOpen={openItem}
-					onUseTable={() => setView("table")}
-				/>
+				<>
+					{details.data.truncated && (
+						<p className="muted" role="status" style={{ margin: "0 0 10px" }}>
+							条目较多，仅显示前 {details.data.items.length} 条（共{" "}
+							{details.data.totalCount} 条）；完整列表请在 GitHub 查看。
+						</p>
+					)}
+					{view === "table" ? (
+						<TableView
+							fields={details.data.fields}
+							items={details.data.items}
+							onOpen={openItem}
+						/>
+					) : (
+						<BoardView
+							fields={details.data.fields}
+							items={details.data.items}
+							onOpen={openItem}
+							onUseTable={() => setView("table")}
+						/>
+					)}
+				</>
 			)}
 		</>
 	);
@@ -301,16 +324,15 @@ function BoardView({
 	onOpen: (item: ProjectV2Item) => void;
 	onUseTable: () => void;
 }) {
-	const status =
-		fields.find(
-			(f) =>
-				f.dataType === "SINGLE_SELECT" && f.name.toLowerCase() === "status",
-		) ?? fields.find((f) => f.dataType === "SINGLE_SELECT");
+	// 条目只携带 Status 字段的值（item.status），其他单选字段没有值来源，不做回退。
+	const status = fields.find(
+		(f) => f.dataType === "SINGLE_SELECT" && f.name.toLowerCase() === "status",
+	);
 	if (!status)
 		return (
 			<ResourceState
-				title="没有可用于看板的字段"
-				detail="看板视图需要一个单选（Single Select）字段来分列，通常是 Status。可改用表格视图查看全部字段。"
+				title="看板仅支持按 Status 字段分列"
+				detail="该 Project 没有名为 Status 的单选字段，无法用看板展示。可改用表格视图查看全部字段。"
 				action={
 					<button className="btn" onClick={onUseTable}>
 						切换到表格视图
