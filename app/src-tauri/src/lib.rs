@@ -3,8 +3,8 @@ mod fsx;
 mod git;
 mod github;
 mod launch;
+mod pm;
 mod projects;
-mod projects_v2;
 mod store;
 #[cfg(windows)]
 mod window_theme;
@@ -16,12 +16,17 @@ pub struct AppState {
     pub http: github::Http,
     /// 当前 token 是否具备 project scope（None = 未探测/无法判断），登录与 auth_status 时记录
     pub has_project_scope: Mutex<Option<bool>>,
-    /// Projects V2 board 内存缓存（显式刷新 / 换 project / 过期时重建）
-    pub projects_v2_cache: Mutex<Option<projects_v2::BoardCache>>,
+    /// Projects V2 后端已退役（自研 PM 模块替代）。github.rs 登录/登出时仍会清空此槽位，
+    /// 保留占位避免跨 scope 改动；P2 GitHub 互通若需 items 缓存可复用
+    pub projects_v2_cache: Mutex<Option<()>>,
+    /// 自研 PM 数据层（SQLite，app 数据目录 pm.sqlite3）
+    pub pm: Mutex<pm::store::PmStore>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let pm_store = pm::store::PmStore::open(&store::app_data_dir().join("pm.sqlite3"))
+        .expect("初始化 PM 数据库失败");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -30,6 +35,7 @@ pub fn run() {
             http: github::Http::new(),
             has_project_scope: Mutex::new(None),
             projects_v2_cache: Mutex::new(None),
+            pm: Mutex::new(pm_store),
         })
         .setup(|_app| {
             #[cfg(windows)]
@@ -48,9 +54,19 @@ pub fn run() {
             github::logout,
             // My GitHub
             github::list_my_repos,
-            // Projects V2
-            projects_v2::list_projects_v2,
-            projects_v2::get_project_v2,
+            // Projects V2（已退役，P2 互通时由 pm 模块承接）
+            // PM（自研项目管理）
+            pm::pm_list_items,
+            pm::pm_create_item,
+            pm::pm_update_item,
+            pm::pm_move_item,
+            pm::pm_delete_item,
+            pm::pm_list_milestones,
+            pm::pm_create_milestone,
+            pm::pm_update_milestone,
+            pm::pm_delete_milestone,
+            pm::pm_export_json,
+            pm::pm_import_json,
             // 项目 / clone
             projects::check_clone_target,
             projects::clone_repo,
