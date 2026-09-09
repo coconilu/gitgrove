@@ -230,6 +230,26 @@ pub fn default_branch(repo: &Path) -> String {
     }
 }
 
+/// git fetch --all --prune：刷新 remote-tracking 引用，ahead/behind 与分支列表的数据源
+pub fn fetch(repo: &Path) -> Result<(), String> {
+    let args: Vec<String> = network_args()
+        .into_iter()
+        .chain(["fetch".into(), "--all".into(), "--prune".into()])
+        .collect();
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run_in(repo, &refs).map(|_| ())
+}
+
+/// git pull --ff-only：只允许快进；分叉等非 ff 情况把 git 报错原文返回给前端 toast
+pub fn pull_ff_only(path: &Path) -> Result<(), String> {
+    let args: Vec<String> = network_args()
+        .into_iter()
+        .chain(["pull".into(), "--ff-only".into()])
+        .collect();
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run_in(path, &refs).map(|_| ())
+}
+
 /// ahead/behind 相对 upstream；无 upstream 时返回 (0,0)
 pub fn ahead_behind(path: &Path) -> (u32, u32) {
     let out = match run_in(path, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) {
