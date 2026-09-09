@@ -77,6 +77,7 @@ fn catalog() -> Vec<AppSpec> {
         let mut apps = vec![
             spec("vscode", "VS Code", "editor", "Code.exe", &["code.exe"]),
             spec("cursor", "Cursor", "editor", "Cursor.exe", &["cursor.exe"]),
+            spec("zcode", "ZCode", "editor", "ZCode.exe", &["zcode.exe"]),
             spec(
                 "windows-terminal",
                 "Windows Terminal",
@@ -115,11 +116,11 @@ fn catalog() -> Vec<AppSpec> {
             .collect();
         for app in &mut apps {
             match app.id {
-                "vscode" | "cursor" => {
-                    let folder = if app.id == "vscode" {
-                        "Microsoft VS Code"
-                    } else {
-                        "cursor"
+                "vscode" | "cursor" | "zcode" => {
+                    let folder = match app.id {
+                        "vscode" => "Microsoft VS Code",
+                        "cursor" => "cursor",
+                        _ => "ZCode",
                     };
                     if let Some(base) = &local {
                         app.locations
@@ -178,12 +179,14 @@ fn catalog() -> Vec<AppSpec> {
                 &["code", "visual studio code"],
             ),
             spec("cursor", "Cursor", "editor", "cursor", &["cursor"]),
+            spec("zcode", "ZCode", "editor", "zcode", &["zcode"]),
             spec("terminal", "Terminal", "terminal", "", &["terminal"]),
             spec("iterm", "iTerm2", "terminal", "", &["iterm2"]),
         ];
         for (app, bundle) in apps.iter_mut().zip([
             "Visual Studio Code.app",
             "Cursor.app",
+            "ZCode.app",
             "Terminal.app",
             "iTerm.app",
         ]) {
@@ -202,6 +205,7 @@ fn catalog() -> Vec<AppSpec> {
         vec![
             spec("vscode", "VS Code", "editor", "code", &["code"]),
             spec("cursor", "Cursor", "editor", "cursor", &["cursor"]),
+            spec("zcode", "ZCode", "editor", "zcode", &["zcode"]),
             spec(
                 "gnome-terminal",
                 "GNOME Terminal",
@@ -242,7 +246,7 @@ fn resolve_in(app: &AppSpec, dirs: &[PathBuf]) -> Option<PathBuf> {
             return Some(direct);
         }
         #[cfg(windows)]
-        if matches!(app.id, "vscode" | "cursor" | "git-bash") {
+        if matches!(app.id, "vscode" | "cursor" | "zcode" | "git-bash") {
             if let Some(parent) = dir.parent() {
                 let candidate = parent.join(app.executable);
                 if available_path(&candidate) {
@@ -429,16 +433,20 @@ fn launch_command(app: &AppSpec, executable: &Path, target: &Path) -> Command {
 }
 
 fn launch(path: String, kind: &str) -> Result<(), String> {
-    let target = PathBuf::from(path);
-    if !target.is_absolute() || !target.exists() || (kind == "terminal" && !target.is_dir()) {
-        return Err("目标路径不存在，或不是有效的完整目录路径。".into());
-    }
     let prefs = get_launch_preferences()?;
     let id = if kind == "editor" {
         &prefs.editor
     } else {
         &prefs.terminal
     };
+    launch_selected(path, kind, id)
+}
+
+fn launch_selected(path: String, kind: &str, id: &str) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.is_absolute() || !target.exists() || (kind == "terminal" && !target.is_dir()) {
+        return Err("目标路径不存在，或不是有效的完整目录路径。".into());
+    }
     let (app, executable) = selected_app(kind, id)?;
     #[cfg(windows)]
     if let Some(arguments) = console_arguments(app.id) {
@@ -473,6 +481,14 @@ pub async fn open_in_editor(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_in_terminal(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || launch(path, "terminal"))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ZCode 是独立入口，不走“默认编辑器”偏好设置
+#[tauri::command]
+pub async fn open_in_zcode(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || launch_selected(path, "editor", "zcode"))
         .await
         .map_err(|e| e.to_string())?
 }

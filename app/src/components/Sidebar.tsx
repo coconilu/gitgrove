@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import * as api from "../api";
@@ -211,20 +210,6 @@ export default function Sidebar() {
 													?.removeAttribute("open")
 											}
 										>
-											{p.providerIdentity && (
-												<button
-													onClick={() =>
-														openUrl(
-															"https://github.com/" +
-																p.providerIdentity!.owner +
-																"/" +
-																p.providerIdentity!.repo,
-														).catch((e) => s.toast(String(e)))
-													}
-												>
-													在 GitHub 打开
-												</button>
-											)}
 											<button onClick={() => remove(p)}>移除项目…</button>
 										</div>
 									</details>

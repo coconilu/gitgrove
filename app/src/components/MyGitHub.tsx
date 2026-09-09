@@ -188,7 +188,9 @@ export default function MyGitHub() {
 									</div>
 								</div>
 								<div className="ops">
-									{project && <OpenInMenu path={project.localPath} />}
+									{project && (
+										<OpenInMenu path={project.localPath} githubUrl={r.url} />
+									)}
 									<button
 										className="btn sm"
 										aria-label={"在 GitHub 打开 " + r.nameWithOwner}

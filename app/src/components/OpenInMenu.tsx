@@ -1,15 +1,26 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import * as api from "../api";
 import { useStore } from "../store";
 
-type Destination = "codex" | "kimi" | "editor" | "terminal";
+type Destination =
+	| "codex"
+	| "kimi"
+	| "zcode"
+	| "editor"
+	| "terminal"
+	| "explorer"
+	| "github";
 const labels: Record<Destination, string> = {
 	codex: "Codex",
 	kimi: "Kimi Code",
+	zcode: "ZCode",
 	editor: "默认编辑器",
 	terminal: "默认终端",
+	explorer: "文件资源管理器",
+	github: "GitHub",
 };
 // Shared across the header and repository list, including component remounts.
 const useOpening = create<{ target: Destination | null }>(() => ({
@@ -24,7 +35,13 @@ function supportsAgents() {
 	return supportRequest;
 }
 
-export function OpenInMenu({ path }: { path: string }) {
+export function OpenInMenu({
+	path,
+	githubUrl,
+}: {
+	path: string;
+	githubUrl?: string;
+}) {
 	const target = useOpening((s) => s.target);
 	const [open, setOpen] = useState(false);
 	const [supported, setSupported] = useState<boolean | null>(null);
@@ -55,7 +72,11 @@ export function OpenInMenu({ path }: { path: string }) {
 		try {
 			if (destination === "editor") await api.openInEditor(path);
 			else if (destination === "terminal") await api.openInTerminal(path);
-			else {
+			else if (destination === "explorer") await api.revealInExplorer(path);
+			else if (destination === "zcode") await api.openInZcode(path);
+			else if (destination === "github") {
+				if (githubUrl) await openUrl(githubUrl);
+			} else {
 				const result = await api.openInAgent(path, destination);
 				useStore.getState().toast(result.message);
 			}
@@ -104,19 +125,21 @@ export function OpenInMenu({ path }: { path: string }) {
 					className="more-popover open-in-popover"
 					aria-busy={target !== null}
 				>
-					{(Object.keys(labels) as Destination[]).map((destination) => (
-						<button
-							key={destination}
-							disabled={
-								target !== null ||
-								((destination === "codex" || destination === "kimi") &&
-									supported !== true)
-							}
-							onClick={() => void launch(destination)}
-						>
-							在 {labels[destination]} 中打开
-						</button>
-					))}
+					{(Object.keys(labels) as Destination[])
+						.filter((destination) => destination !== "github" || githubUrl)
+						.map((destination) => (
+							<button
+								key={destination}
+								disabled={
+									target !== null ||
+									((destination === "codex" || destination === "kimi") &&
+										supported !== true)
+								}
+								onClick={() => void launch(destination)}
+							>
+								在 {labels[destination]} 中打开
+							</button>
+						))}
 					{supported === false && (
 						<p className="muted">Codex / Kimi Code 暂仅支持 Windows。</p>
 					)}
