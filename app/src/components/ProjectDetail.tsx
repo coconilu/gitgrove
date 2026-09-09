@@ -2,6 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as api from "../api";
+import { fetchProject, pullCheckout } from "../api-sync";
 import { ciStatus, TAB_LABELS, TABS } from "../navigation";
 import { activeCheckout, useStore } from "../store";
 import type { CiStatus, IssueInfo, PrInfo, Project, RunInfo } from "../types";
@@ -222,12 +223,39 @@ function Worktrees({ p }: { p: Project }) {
 	);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
+	const [fetching, setFetching] = useState(false);
 	// 默认开启过滤：只显示本地分支；关闭后 origin/xxx 远程分支带「远程」标识一起列出
 	const [hideRemote, setHideRemote] = useState(true);
 	const [pruning, setPruning] = useState(false);
 	const enter = (cid: string) => {
 		setSel({ kind: "checkout", cid });
 		setView("projects");
+	};
+	const refreshWithFetch = async () => {
+		setFetching(true);
+		try {
+			await fetchProject(p.id);
+		} catch (e) {
+			toast("远端同步失败：" + String(e));
+		} finally {
+			setFetching(false);
+		}
+		branches.reload();
+		void refreshProjects();
+	};
+	const pull = async (path: string, branch: string) => {
+		setBusy("pull:" + path);
+		setError("");
+		try {
+			await pullCheckout(path);
+			await refreshProjects();
+			branches.reload();
+			toast("已拉取最新提交：" + branch);
+		} catch (e) {
+			toast(String(e));
+		} finally {
+			setBusy("");
+		}
 	};
 	const pruneMerged = async () => {
 		setPruning(true);
@@ -291,13 +319,10 @@ function Worktrees({ p }: { p: Project }) {
 				</div>
 				<div className="ops">
 					<IconButton
-						label="刷新工作树与分支"
+						label="刷新工作树与分支（先从远端 fetch）"
 						icon={RefreshCw}
-						busy={branches.loading || projectsLoading}
-						onClick={() => {
-							branches.reload();
-							void refreshProjects();
-						}}
+						busy={branches.loading || projectsLoading || fetching}
+						onClick={() => void refreshWithFetch()}
 					/>
 					<button className="btn primary" onClick={() => newWorktree(p)}>
 						新建工作树
@@ -332,6 +357,16 @@ function Worktrees({ p }: { p: Project }) {
 								)}
 							</div>
 						</div>
+						{c.behind > 0 && (
+							<button
+								className="btn"
+								disabled={Boolean(busy)}
+								title="git pull --ff-only；分叉不能快进时会提示 git 报错"
+								onClick={() => void pull(c.path, c.branch)}
+							>
+								{busy === "pull:" + c.path ? "拉取中…" : "拉取"}
+							</button>
+						)}
 						{currentCid === c.id ? (
 							<span className="current-checkout">当前使用</span>
 						) : (
@@ -404,6 +439,16 @@ function Worktrees({ p }: { p: Project }) {
 									</div>
 								</div>
 								{abText(b.ahead, b.behind)}
+								{!b.remote && checkout && b.behind > 0 && (
+									<button
+										className="btn sm"
+										disabled={Boolean(busy)}
+										title="git pull --ff-only；分叉不能快进时会提示 git 报错"
+										onClick={() => void pull(checkout.path, b.name)}
+									>
+										{busy === "pull:" + checkout.path ? "拉取中…" : "拉取"}
+									</button>
+								)}
 								{checkout?.id === currentCid && checkout ? (
 									<span className="current-checkout">当前使用</span>
 								) : !b.remote ? (

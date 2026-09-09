@@ -301,6 +301,31 @@ pub fn list_branches(project_id: String) -> Result<Vec<git::BranchInfo>, String>
     git::branches(Path::new(&sp.local_path))
 }
 
+/// 拉取后的 ahead/behind，供前端即时刷新同步状态
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AheadBehind {
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// git fetch --all --prune：让 ahead/behind 与分支列表反映远端真实状态
+#[tauri::command]
+pub fn fetch_project(project_id: String) -> Result<(), String> {
+    let st = store::load();
+    let sp = find_project(&st, &project_id)?;
+    git::fetch(Path::new(&sp.local_path))
+}
+
+/// ff-only 拉取某个工作树；非快进时原样返回 git 报错（前端 toast 展示）
+#[tauri::command]
+pub fn pull_checkout(path: String) -> Result<AheadBehind, String> {
+    let p = Path::new(&path);
+    git::pull_ff_only(p)?;
+    let (ahead, behind) = git::ahead_behind(p);
+    Ok(AheadBehind { ahead, behind })
+}
+
 /// 删除已合并分支的预览：返回将删除的清单（供前端确认弹窗）与被保护跳过的分支
 #[tauri::command]
 pub fn merged_branches_plan(project_id: String) -> Result<git::BranchDeletePlan, String> {

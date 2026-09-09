@@ -77,6 +77,8 @@ pub fn run() {
             projects::remove_project,
             // worktree / 分支
             projects::list_branches,
+            projects::fetch_project,
+            projects::pull_checkout,
             projects::merged_branches_plan,
             projects::delete_merged_branches,
             projects::create_worktree,
