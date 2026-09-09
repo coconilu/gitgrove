@@ -10,10 +10,16 @@ import type {
 	LaunchApp,
 	LaunchPreferences,
 	LinkedWorkItem,
+	PmExport,
+	PmImportResult,
+	PmItem,
+	PmItemFilter,
+	PmMilestone,
+	PmMilestoneWithStats,
+	PmNewItem,
+	PmStatusDef,
 	PrInfo,
 	Project,
-	ProjectV2Board,
-	ProjectV2Info,
 	RepoInfo,
 	RunInfo,
 	StatusMap,
@@ -30,27 +36,41 @@ export const logout = () => invoke<void>("logout");
 // ---- My GitHub ----
 export const listMyRepos = () => invoke<RepoInfo[]>("list_my_repos");
 
-// ---- Projects V2 ----
-/** 后端 typed error 前缀：token 缺少 project scope 时抛出，前端据此引导重新生成 classic PAT */
-export const ERR_MISSING_PROJECT_SCOPE = "MISSING_PROJECT_SCOPE:";
-export const isMissingProjectScope = (e: unknown) =>
-	typeof e === "string" && e.startsWith(ERR_MISSING_PROJECT_SCOPE);
-/** 后端 typed error 前缀：token 失效/被吊销（HTTP 401 Bad credentials），引导重新登录 */
-export const ERR_BAD_CREDENTIALS = "BAD_CREDENTIALS:";
-export const isBadCredentials = (e: unknown) =>
-	typeof e === "string" && e.startsWith(ERR_BAD_CREDENTIALS);
-/** owner 为空 = 当前登录用户；ownerType 不给时后端自动尝试 user / org 两条路径 */
-export const listProjectsV2 = (
-	owner?: string | null,
-	ownerType?: "user" | "org" | null,
+// ---- 自研项目管理（PM） ----
+export const pmListItems = (filter?: PmItemFilter | null) =>
+	invoke<PmItem[]>("pm_list_items", { filter: filter ?? null });
+export const pmCreateItem = (input: PmNewItem) =>
+	invoke<PmItem>("pm_create_item", { input });
+/** 全字段更新（PUT 语义）：传回完整 item，order/createdAt/githubRef 由服务端保留 */
+export const pmUpdateItem = (item: PmItem) =>
+	invoke<PmItem>("pm_update_item", { item });
+/** 跨列移动 + 列内定位：beforeItemId 为 null 时排到目标列尾部 */
+export const pmMoveItem = (
+	itemId: string,
+	toStatus: string,
+	beforeItemId: string | null,
+) => invoke<PmItem>("pm_move_item", { itemId, toStatus, beforeItemId });
+export const pmDeleteItem = (itemId: string) =>
+	invoke<void>("pm_delete_item", { itemId });
+export const pmListMilestones = () =>
+	invoke<PmMilestoneWithStats[]>("pm_list_milestones");
+export const pmCreateMilestone = (
+	title: string,
+	description: string | null,
+	dueDate: string | null,
 ) =>
-	invoke<ProjectV2Info[]>("list_projects_v2", {
-		owner: owner ?? null,
-		ownerType: ownerType ?? null,
-	});
-/** 读取单个 project 的字段与 items；后端内存缓存 5 分钟，refresh=true 强制刷新 */
-export const getProjectV2 = (projectId: string, refresh = false) =>
-	invoke<ProjectV2Board>("get_project_v2", { projectId, refresh });
+	invoke<PmMilestone>("pm_create_milestone", { title, description, dueDate });
+export const pmUpdateMilestone = (milestone: PmMilestone) =>
+	invoke<PmMilestone>("pm_update_milestone", { milestone });
+export const pmDeleteMilestone = (milestoneId: string) =>
+	invoke<void>("pm_delete_milestone", { milestoneId });
+export const pmExportJson = () => invoke<PmExport>("pm_export_json");
+export const pmImportJson = (data: PmExport) =>
+	invoke<PmImportResult>("pm_import_json", { data });
+/** 看板列定义（settings 表）；后端 command 补齐前由前端回退默认列 */
+export const pmListStatuses = () => invoke<PmStatusDef[]>("pm_list_statuses");
+export const pmUpdateStatuses = (statuses: PmStatusDef[]) =>
+	invoke<PmStatusDef[]>("pm_update_statuses", { statuses });
 
 // ---- clone / 项目 ----
 export const checkCloneTarget = (repo: string) =>

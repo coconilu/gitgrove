@@ -47,53 +47,87 @@ export interface AuthState {
 	hasProjectScope: boolean | null;
 }
 
-// ---- GitHub Projects V2 ----
+// ---- 自研项目管理（PM） ----
 
-export interface ProjectV2Info {
-	id: string;
-	number: number;
-	title: string;
-	shortDescription: string;
-	url: string;
-	closed: boolean;
-	updatedAt: string;
-	ownerLogin: string;
-	ownerType: "user" | "org";
-}
-
-export interface ProjectV2FieldOption {
+/** 看板列定义，持久化在后端 settings 表 */
+export interface PmStatusDef {
 	id: string;
 	name: string;
 }
 
-export interface ProjectV2Field {
-	id: string;
-	name: string;
-	dataType: string; // "SINGLE_SELECT" / "TEXT" / "NUMBER" / "DATE" / "ITERATION" ...
-	options: ProjectV2FieldOption[]; // 仅单选字段（如 Status）有值
-}
+export type PmPriority = "none" | "low" | "medium" | "high" | "urgent";
 
-export interface ProjectV2Item {
+export interface PmItem {
 	id: string;
-	contentType: "Issue" | "PullRequest" | "DraftIssue" | "";
 	title: string;
-	number: number | null;
-	state: string;
-	url: string;
-	repo: string; // nameWithOwner
-	status: string | null; // Status 单选字段当前值
-	statusOptionId: string | null;
-	updatedAt: string;
+	body: string;
+	status: string;
+	priority: PmPriority | string;
+	milestoneId: string | null;
+	labels: string[];
+	repoPath: string | null;
+	branch: string | null;
+	/** YYYY-MM-DD */
+	dueDate: string | null;
+	/** 看板列内排序键（fractional indexing，字符串序） */
+	order: string;
+	/** P2 GitHub 互通预留位 */
+	githubRef: string | null;
+	createdAt: number;
+	updatedAt: number;
 }
 
-export interface ProjectV2Board {
-	project: ProjectV2Info;
-	fields: ProjectV2Field[];
-	items: ProjectV2Item[];
-	/** project 内 items 总数（GraphQL totalCount） */
-	totalCount: number;
-	/** 达到后端翻页上限（500 条）未拉全时为 true */
-	truncated: boolean;
+export interface PmMilestone {
+	id: string;
+	title: string;
+	description: string;
+	dueDate: string | null;
+	status: string; // open | closed
+	githubRef: string | null;
+	createdAt: number;
+	updatedAt: number;
+}
+
+/** pm_list_milestones 返回：附带 item 聚合（done = 最后一个看板列） */
+export interface PmMilestoneWithStats extends PmMilestone {
+	total: number;
+	done: number;
+}
+
+/** pm_list_items 过滤参数；labels 为「同时包含」语义 */
+export interface PmItemFilter {
+	milestoneId?: string | null;
+	repoPath?: string | null;
+	status?: string | null;
+	labels?: string[] | null;
+	priority?: string | null;
+	search?: string | null;
+}
+
+/** pm_create_item 入参（id / order / 时间戳由后端生成） */
+export interface PmNewItem {
+	title: string;
+	body?: string;
+	status?: string | null;
+	priority?: string | null;
+	milestoneId?: string | null;
+	labels?: string[];
+	repoPath?: string | null;
+	branch?: string | null;
+	dueDate?: string | null;
+}
+
+/** pm_export_json / pm_import_json 的整库快照 */
+export interface PmExport {
+	version: number;
+	statuses: PmStatusDef[];
+	items: PmItem[];
+	milestones: PmMilestone[];
+}
+
+export interface PmImportResult {
+	items: number;
+	milestones: number;
 }
 
 export interface RepoInfo {

@@ -1,0 +1,198 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+	computeMove,
+	DEFAULT_STATUSES,
+	dayDiff,
+	doneStatusId,
+	dueInfo,
+	filterItems,
+	focusSummary,
+	groupByStatus,
+	milestoneProgress,
+	repoName,
+	sortMilestones,
+	todayString,
+} from "../src/components/pm/model.ts";
+
+const item = (over) => ({
+	id: "i1",
+	title: "任务",
+	body: "",
+	status: "todo",
+	priority: "none",
+	milestoneId: null,
+	labels: [],
+	repoPath: null,
+	branch: null,
+	dueDate: null,
+	order: "a",
+	githubRef: null,
+	createdAt: 1,
+	updatedAt: 1,
+	...over,
+});
+
+test("filterItems 按里程碑/仓库/标签/优先级/搜索过滤", () => {
+	const items = [
+		item({ id: "a", milestoneId: "m1", repoPath: "/r/x", labels: ["ui"] }),
+		item({ id: "b", priority: "high", title: "修 bug", body: "crash" }),
+		item({ id: "c", milestoneId: "m2", labels: ["ui", "infra"] }),
+	];
+	const f = {
+		milestoneId: null,
+		repoPath: null,
+		label: null,
+		priority: null,
+		search: "",
+	};
+	assert.equal(filterItems(items, f).length, 3);
+	assert.deepEqual(
+		filterItems(items, { ...f, milestoneId: "m1" }).map((i) => i.id),
+		["a"],
+	);
+	assert.deepEqual(
+		filterItems(items, { ...f, repoPath: "/r/x" }).map((i) => i.id),
+		["a"],
+	);
+	assert.deepEqual(
+		filterItems(items, { ...f, label: "ui" }).map((i) => i.id),
+		["a", "c"],
+	);
+	assert.deepEqual(
+		filterItems(items, { ...f, priority: "high" }).map((i) => i.id),
+		["b"],
+	);
+	assert.deepEqual(
+		filterItems(items, { ...f, search: "CRASH" }).map((i) => i.id),
+		["b"],
+	);
+});
+
+test("groupByStatus 按列分组并按 order 排序，未知状态被丢弃", () => {
+	const items = [
+		item({ id: "a", status: "todo", order: "b" }),
+		item({ id: "b", status: "todo", order: "a" }),
+		item({ id: "c", status: "done" }),
+		item({ id: "d", status: "archived" }),
+	];
+	const groups = groupByStatus(items, DEFAULT_STATUSES);
+	assert.deepEqual(
+		groups.get("todo").map((i) => i.id),
+		["b", "a"],
+	);
+	assert.deepEqual(
+		groups.get("done").map((i) => i.id),
+		["c"],
+	);
+	assert.equal(groups.get("backlog").length, 0);
+});
+
+test("doneStatusId 取最后一列，milestoneProgress 分段聚合", () => {
+	assert.equal(doneStatusId(DEFAULT_STATUSES), "done");
+	const items = [
+		item({ id: "a", milestoneId: "m1", status: "done" }),
+		item({ id: "b", milestoneId: "m1", status: "doing" }),
+		item({ id: "c", milestoneId: "m1", status: "backlog" }),
+		item({ id: "d", milestoneId: "m1", status: "todo" }),
+		item({ id: "e", milestoneId: "m2", status: "done" }),
+	];
+	const p = milestoneProgress(items, "m1", "done");
+	assert.deepEqual(
+		{ total: p.total, done: p.done, doing: p.doing, rest: p.rest },
+		{ total: 4, done: 1, doing: 1, rest: 2 },
+	);
+	assert.equal(p.pct, 25);
+	assert.equal(milestoneProgress(items, "m3", "done").pct, 0);
+});
+
+test("dueInfo 倒计时与逾期", () => {
+	const today = "2026-09-10";
+	assert.deepEqual(dueInfo("2026-09-10", today), {
+		short: "09-10",
+		text: "今天到期",
+		overdue: false,
+		dueToday: true,
+	});
+	const future = dueInfo("2026-09-20", today);
+	assert.equal(future.text, "还剩 10 天");
+	assert.equal(future.overdue, false);
+	const past = dueInfo("2026-09-08", today);
+	assert.equal(past.text, "已逾期 2 天");
+	assert.equal(past.overdue, true);
+	assert.equal(dayDiff("2026-01-01", "2026-12-31"), 364);
+});
+
+test("focusSummary 聚合 doing 与今日到期（排除完成列）", () => {
+	const today = "2026-09-10";
+	const items = [
+		item({ id: "a", status: "doing" }),
+		item({ id: "b", status: "todo", dueDate: today }),
+		item({ id: "c", status: "done", dueDate: today }),
+	];
+	const focus = focusSummary(items, today, "done");
+	assert.deepEqual(
+		focus.doing.map((i) => i.id),
+		["a"],
+	);
+	assert.deepEqual(
+		focus.dueToday.map((i) => i.id),
+		["b"],
+	);
+});
+
+test("sortMilestones：开放在前、按截止日升序、无截止最后、关闭垫底", () => {
+	const ms = (over) => ({
+		id: "m",
+		title: "m",
+		description: "",
+		dueDate: null,
+		status: "open",
+		githubRef: null,
+		createdAt: 1,
+		updatedAt: 1,
+		total: 0,
+		done: 0,
+		...over,
+	});
+	const sorted = sortMilestones([
+		ms({ id: "noDue" }),
+		ms({ id: "closed", status: "closed", dueDate: "2026-01-01" }),
+		ms({ id: "late", dueDate: "2026-10-01" }),
+		ms({ id: "soon", dueDate: "2026-09-20" }),
+	]);
+	assert.deepEqual(
+		sorted.map((m) => m.id),
+		["soon", "late", "noDue", "closed"],
+	);
+});
+
+test("computeMove：跨列落列尾、插到目标卡片前、原地不动返回 null", () => {
+	const items = [
+		item({ id: "a", status: "todo", order: "a" }),
+		item({ id: "b", status: "todo", order: "b" }),
+		item({ id: "c", status: "doing", order: "a" }),
+	];
+	assert.deepEqual(computeMove(items, DEFAULT_STATUSES, "a", "doing"), {
+		toStatus: "doing",
+		beforeItemId: null,
+	});
+	assert.deepEqual(computeMove(items, DEFAULT_STATUSES, "a", "c"), {
+		toStatus: "doing",
+		beforeItemId: "c",
+	});
+	assert.deepEqual(computeMove(items, DEFAULT_STATUSES, "a", "b"), {
+		toStatus: "todo",
+		beforeItemId: "b",
+	});
+	assert.equal(computeMove(items, DEFAULT_STATUSES, "a", "a"), null);
+	assert.equal(computeMove(items, DEFAULT_STATUSES, "a", "todo"), null);
+	assert.equal(computeMove(items, DEFAULT_STATUSES, "a", null), null);
+	assert.equal(computeMove(items, DEFAULT_STATUSES, "missing", "todo"), null);
+});
+
+test("repoName 取路径末段", () => {
+	assert.equal(repoName("C:\\work\\gitgrove"), "gitgrove");
+	assert.equal(repoName("/repos/demo/"), "demo");
+	assert.equal(todayString(new Date(2026, 8, 10)), "2026-09-10");
+});
