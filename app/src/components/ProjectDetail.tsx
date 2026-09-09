@@ -11,6 +11,7 @@ import MarkdownView from "./MarkdownView";
 import { relTime } from "./MyGitHub";
 import ProjectsPanel from "./ProjectsPanel";
 import { ResourceState, useResource } from "./ResourceState";
+import { Select } from "./ui/select";
 
 export function ProjectTabs() {
 	const { tab, setTab, sel } = useStore();
@@ -546,19 +547,20 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 						setQ(e.target.value);
 					}}
 				/>
-				<select
-					className="input"
+				<Select
+					className="list-tools-select"
 					aria-label="任务状态"
 					value={filter}
-					onChange={(e) => {
+					onValueChange={(v) => {
 						s.setWorkItemFocus(null);
-						setFilter(e.target.value);
+						setFilter(v);
 					}}
-				>
-					<option value="open">开放</option>
-					<option value="closed">已关闭 / 合并</option>
-					<option value="all">全部</option>
-				</select>
+					options={[
+						{ value: "open", label: "开放" },
+						{ value: "closed", label: "已关闭 / 合并" },
+						{ value: "all", label: "全部" },
+					]}
+				/>
 			</div>
 			{error && (
 				<div className="inline-error" role="alert">
