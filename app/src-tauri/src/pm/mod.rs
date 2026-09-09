@@ -94,3 +94,24 @@ pub fn pm_export_json(state: State<'_, AppState>) -> Result<PmExport, String> {
 pub fn pm_import_json(state: State<'_, AppState>, data: PmExport) -> Result<ImportResult, String> {
     state.pm.lock().unwrap().import(&data)
 }
+
+// ---- 临时 stub：GitHub Projects V2 面板已退役，但前端 api.ts/ProjectsPanel 仍在 invoke ----
+// 保持原函数名与参数签名以免前端 "unknown command"；M8 前端摘除调用后删除这两个 stub 及 lib.rs 注册
+
+#[tauri::command]
+pub fn list_projects_v2(
+    owner: Option<String>,
+    owner_type: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let _ = (owner, owner_type);
+    Ok(Vec::new()) // 空列表：旧面板显示「暂无项目」而非报错
+}
+
+#[tauri::command]
+pub fn get_project_v2(
+    project_id: Option<String>,
+    refresh: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let _ = (project_id, refresh);
+    Err("GitHub Projects 面板已下线，请使用看板视图".into())
+}
