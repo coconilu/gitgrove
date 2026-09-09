@@ -11,6 +11,7 @@ export const TABS = [
 	"Worktrees & Branches",
 	"Issues",
 	"Pull Requests",
+	"Projects",
 	"Actions",
 ] as const;
 export const TAB_LABELS: Record<string, string> = {
@@ -18,6 +19,7 @@ export const TAB_LABELS: Record<string, string> = {
 	"Worktrees & Branches": "工作树与分支",
 	Issues: "Issues",
 	"Pull Requests": "Pull Requests",
+	Projects: "Projects",
 	Actions: "Actions",
 };
 export type Visit = { sel: Selection; tab: string };
