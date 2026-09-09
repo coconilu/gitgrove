@@ -52,3 +52,14 @@ jobs:
 
       - name: Test workflow metadata parser
         run: cargo test --manifest-path app/src-tauri/Cargo.toml --lib
+
+  # check job 只跑 Windows，跨平台编译错误（如 #[cfg] 摘掉的函数被 cfg! 分支引用）拦不住；
+  # 这里只做 Rust 侧 cargo check，不做全量 build
+  check-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check Tauri shell (cargo check)
+        run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
