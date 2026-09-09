@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.6（2026-09-09）
+
+- Merge pull request #32 from coconilu/feat/open-in-menu-rework
+- Merge remote-tracking branch 'origin/master' into feat/open-in-menu-rework
+- fix: review 反馈——githubUrl 校验 provider 为 github；resolve_in 父目录回退覆盖 zcode
+- feat: 打开方式统一收拢到「在…中打开」菜单
+
 ## v1.0.5（2026-09-08）
 
 - Merge pull request #26 from coconilu/fix/markdown-images-html-rewrite
