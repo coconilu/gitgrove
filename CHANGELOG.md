@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.1.0（2026-09-09）
+
+- Merge pull request #36 from coconilu/chore/tower-merge-35
+- Merge branch 'feat/zcode-35'
+- fix: ZCode 用 --open-workspace 传项目目录；explorer 统一反斜杠路径 (#35)
+- Merge pull request #34 from coconilu/chore/tower-merge-29-30-31
+- Merge branch 'feat/radix-ui-components'
+- fix: review r3 — 恢复 .list-tools > select 规则，ProjectsPanel 原生 select 不丢宽度约束
+- feat: ProjectDetail 任务状态筛选下拉换为 ui/Select（#31 收尾）
+- fix: review r1 — biome 格式化 DialogBody 签名；表单内 ui-select-trigger 对齐 .input 字号/内边距
+- feat: Radix UI Primitives 基础组件（Select/Dialog/DropdownMenu/Button/Input）
+- Merge branch 'feat/branch-panel-toolbar'
+- feat: 分支面板工具栏——过滤远程分支开关与删除已合并分支（#30 UI）
+- feat: 注册 merged 分支 commands + api.ts 前端封装（#30）
+- feat: 已合并分支查询/批量删除与删除预览（#30 后端）
+- Merge branch 'feat/projects-panel-ui'
+- Merge branch 'master' of https://github.com/coconilu/gitgrove
+- fix: review r1 三处 P2 + nit（closed 可选、引导重试先刷新登录态、看板仅按 Status、force 一次性、truncated 提示）
+- feat: Projects 面板接入 M1 真实接口（listProjectsV2/getProjectV2 + scope 引导）
+- feat: Projects 页签只读面板 UI（本地契约，待与 M1 联调）
+- Merge branch 'feat/projects-v2-backend'
+- fix: review round 1 的 5 个 P2
+- feat: Projects V2 GraphQL 只读访问层 + project scope 检测
+
 ## v1.0.6（2026-09-09）
 
 - Merge pull request #32 from coconilu/feat/open-in-menu-rework
