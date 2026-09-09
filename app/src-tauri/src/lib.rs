@@ -54,9 +54,6 @@ pub fn run() {
             github::logout,
             // My GitHub
             github::list_my_repos,
-            // Projects V2（已退役；以下为临时 stub，M8 前端摘除调用后删除）
-            pm::list_projects_v2,
-            pm::get_project_v2,
             // PM（自研项目管理）
             pm::pm_list_statuses,
             pm::pm_update_statuses,
