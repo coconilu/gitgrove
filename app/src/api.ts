@@ -12,6 +12,8 @@ import type {
 	LinkedWorkItem,
 	PrInfo,
 	Project,
+	ProjectV2Board,
+	ProjectV2Info,
 	RepoInfo,
 	RunInfo,
 	StatusMap,
@@ -27,6 +29,24 @@ export const logout = () => invoke<void>("logout");
 
 // ---- My GitHub ----
 export const listMyRepos = () => invoke<RepoInfo[]>("list_my_repos");
+
+// ---- Projects V2 ----
+/** 后端 typed error 前缀：token 缺少 project scope 时抛出，前端据此引导重新生成 classic PAT */
+export const ERR_MISSING_PROJECT_SCOPE = "MISSING_PROJECT_SCOPE:";
+export const isMissingProjectScope = (e: unknown) =>
+	typeof e === "string" && e.startsWith(ERR_MISSING_PROJECT_SCOPE);
+/** owner 为空 = 当前登录用户；ownerType 不给时后端自动尝试 user / org 两条路径 */
+export const listProjectsV2 = (
+	owner?: string | null,
+	ownerType?: "user" | "org" | null,
+) =>
+	invoke<ProjectV2Info[]>("list_projects_v2", {
+		owner: owner ?? null,
+		ownerType: ownerType ?? null,
+	});
+/** 读取单个 project 的字段与 items；后端内存缓存 5 分钟，refresh=true 强制刷新 */
+export const getProjectV2 = (projectId: string, refresh = false) =>
+	invoke<ProjectV2Board>("get_project_v2", { projectId, refresh });
 
 // ---- clone / 项目 ----
 export const checkCloneTarget = (repo: string) =>
