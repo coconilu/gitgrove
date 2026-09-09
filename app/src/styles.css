@@ -1285,11 +1285,6 @@ button:disabled {
 	gap: 12px;
 	margin-bottom: 16px;
 }
-/* ProjectsPanel 的原生 select 靠这条规则限定宽度（ProjectsPanel.tsx 不在本 scope，保留）。 */
-.list-tools > select {
-	width: 170px;
-	flex-shrink: 0;
-}
 /* 详情页筛选下拉（ui/Select）：与旁边的 .input 搜索框同字号、同内边距。 */
 .list-tools-select {
 	width: 170px;

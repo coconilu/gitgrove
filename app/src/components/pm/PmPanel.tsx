@@ -85,6 +85,10 @@ export default function PmPanel({ p }: { p: Project }) {
 	const createItem = async (input: PmNewItem) => {
 		const created = await api.pmCreateItem(input);
 		setItems((list) => [...(list ?? []), created]);
+		void api
+			.pmListMilestones()
+			.then(setMilestones)
+			.catch(() => {});
 		toast("任务已创建");
 	};
 	const updateItem = async (item: PmItem) => {
@@ -135,6 +139,10 @@ export default function PmPanel({ p }: { p: Project }) {
 			setItems((list) =>
 				(list ?? []).map((i) => (i.id === updated.id ? updated : i)),
 			);
+			void api
+				.pmListMilestones()
+				.then(setMilestones)
+				.catch(() => {});
 		} catch (e) {
 			toast("移动失败：" + String(e));
 			await load();
