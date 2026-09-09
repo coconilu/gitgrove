@@ -9,6 +9,7 @@ import { abText, CiBadge, LinkBadge, newWorktree } from "./CheckoutActions";
 import IconButton from "./IconButton";
 import MarkdownView from "./MarkdownView";
 import { relTime } from "./MyGitHub";
+import ProjectsPanel from "./ProjectsPanel";
 import { ResourceState, useResource } from "./ResourceState";
 
 export function ProjectTabs() {
@@ -39,11 +40,12 @@ export default function ProjectDetail({ p }: { p: Project }) {
 			{tab === "Worktrees & Branches" && <Worktrees p={p} />}
 			{tab === "Issues" && <WorkItems p={p} kind="issue" />}
 			{tab === "Pull Requests" && <WorkItems p={p} kind="pr" />}
+			{tab === "Projects" && <ProjectsPanel p={p} />}
 			{tab === "Actions" && <Actions p={p} />}
 		</div>
 	);
 }
-function ExternalLink({
+export function ExternalLink({
 	url,
 	children,
 }: {
