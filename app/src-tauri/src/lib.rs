@@ -60,6 +60,7 @@ pub fn run() {
             fsx::trash_path,
             launch::open_in_editor,
             launch::open_in_terminal,
+            launch::open_in_zcode,
             launch::get_launch_preferences,
             launch::save_launch_preferences,
             launch::discover_launch_apps,

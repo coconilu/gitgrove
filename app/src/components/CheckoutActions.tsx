@@ -137,7 +137,15 @@ export function CheckoutActions({ p, c }: { p: Project; c: CheckoutInfo }) {
 	const ops = useCoOps(p);
 	return (
 		<div className="checkout-actions">
-			<OpenInMenu key={c.path} path={c.path} />
+			<OpenInMenu
+				key={c.path}
+				path={c.path}
+				githubUrl={
+					p.providerIdentity
+						? `https://github.com/${p.providerIdentity.owner}/${p.providerIdentity.repo}`
+						: undefined
+				}
+			/>
 			{!c.isPrimary && (
 				<details className="more-menu">
 					<summary className="btn" aria-label={"更多工作树操作：" + c.branch}>

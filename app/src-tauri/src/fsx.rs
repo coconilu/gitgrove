@@ -76,12 +76,23 @@ pub fn trash_path(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    let mut c = git::new_cmd("explorer");
-    if p.is_dir() {
-        c.arg(&path);
+    let mut c = if cfg!(target_os = "macos") {
+        let mut c = git::new_cmd("open");
+        if p.is_dir() {
+            c.arg(&path);
+        } else {
+            c.arg("-R").arg(&path);
+        }
+        c
     } else {
-        c.arg(format!("/select,{}", path.replace('/', "\\")));
-    }
+        let mut c = git::new_cmd("explorer");
+        if p.is_dir() {
+            c.arg(&path);
+        } else {
+            c.arg(format!("/select,{}", path.replace('/', "\\")));
+        }
+        c
+    };
     // explorer 经常返回非零退出码，忽略之
     c.spawn().map_err(|e| format!("无法打开文件管理器: {e}"))?;
     Ok(())
