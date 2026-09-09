@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GitGrove 自研项目管理 · 视图草稿</title>
+<style>
+  :root {
+    --bg:#0d1117; --bg-deep:#010409; --panel:#161b22; --border:#30363d; --border-soft:#21262d;
+    --text:#c9d1d9; --muted:#8b949e; --faint:#6e7681;
+    --accent:#2f81f7; --accent-soft:rgba(47,129,247,.15);
+    --green:#3fb950; --yellow:#d29922; --red:#f85149; --orange:#f78166; --purple:#a371f7;
+    --radius:8px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg-deep); color: var(--text); font: 13px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px; }
+  .frame { width: 1440px; height: 900px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; margin-bottom: 24px; }
+  .caption { color: var(--muted); margin: 4px 0 10px; font-size: 14px; }
+  .caption b { color: var(--text); }
+
+  /* 侧栏 */
+  .sidebar { width: 220px; background: var(--bg-deep); border-right: 1px solid var(--border-soft); padding: 12px; flex-shrink: 0; }
+  .logo { font-weight: 600; font-size: 14px; margin-bottom: 14px; }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav-item { padding: 6px 10px; border-radius: 6px; color: var(--muted); }
+  .nav-item.active { background: var(--accent-soft); color: var(--text); border-left: 2px solid var(--accent); }
+  .side-hint { margin-top: 16px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 6px; color: var(--faint); font-size: 12px; }
+
+  /* 主区 */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); }
+  .toolbar .title { font-size: 14px; font-weight: 600; margin-right: 8px; }
+  .chip { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; color: var(--muted); background: var(--panel); font-size: 12px; }
+  .chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .search { margin-left: auto; width: 200px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; color: var(--faint); font-size: 12px; }
+  .btn { background: var(--accent); color: #fff; border-radius: 6px; padding: 4px 12px; font-size: 12px; }
+
+  /* 看板 */
+  .board { flex: 1; display: flex; gap: 12px; padding: 14px 16px; overflow: hidden; }
+  .col { flex: 1; background: var(--bg-deep); border: 1px solid var(--border-soft); border-radius: var(--radius); display: flex; flex-direction: column; min-width: 0; }
+  .col-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); font-weight: 600; }
+  .col-head .count { background: var(--panel); border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--muted); padding: 0 7px; font-weight: 400; }
+  .col-head .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .col-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .card.dragging { border-color: var(--accent); box-shadow: 0 4px 16px rgba(0,0,0,.5); transform: rotate(1.5deg); opacity: .95; }
+  .card .t { font-weight: 600; }
+  .card .meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11px; color: var(--muted); }
+  .tag { border-radius: 999px; padding: 0 7px; border: 1px solid var(--border); }
+  .tag.ms { color: var(--purple); border-color: rgba(163,113,247,.4); }
+  .tag.repo { color: var(--accent); border-color: rgba(47,129,247,.4); }
+  .tag.pr-ok { color: var(--green); border-color: rgba(63,185,80,.4); }
+  .tag.pr-ci { color: var(--yellow); border-color: rgba(210,153,34,.4); }
+  .tag.due { color: var(--orange); border-color: rgba(247,129,102,.4); }
+  .tag.due.over { color: var(--red); border-color: rgba(248,81,73,.5); }
+  .prio { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .p-urgent { background: var(--red); } .p-high { background: var(--orange); } .p-medium { background: var(--yellow); } .p-low { background: var(--faint); }
+  .add-card { color: var(--faint); padding: 6px 10px; border: 1px dashed var(--border); border-radius: var(--radius); text-align: center; font-size: 12px; }
+
+  /* 里程碑 */
+  .ms-list { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+  .focus-strip { display: flex; gap: 10px; align-items: center; background: var(--accent-soft); border: 1px solid rgba(47,129,247,.35); border-radius: var(--radius); padding: 10px 14px; }
+  .focus-strip .label { color: var(--accent); font-weight: 600; }
+  .ms-row { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .ms-row.overdue { border-color: rgba(248,81,73,.5); }
+  .ms-top { display: flex; align-items: center; gap: 10px; }
+  .ms-name { font-weight: 600; font-size: 14px; }
+  .ms-due { color: var(--muted); font-size: 12px; }
+  .ms-due.over { color: var(--red); font-weight: 600; }
+  .ms-pct { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .bar { height: 8px; background: var(--bg-deep); border: 1px solid var(--border-soft); border-radius: 999px; overflow: hidden; display: flex; }
+  .bar i { display: block; height: 100%; }
+  .bar .done { background: var(--green); } .bar .doing { background: var(--accent); } .bar .todo { background: var(--border); }
+  .ms-sub { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+  .legend { display: flex; gap: 14px; color: var(--faint); font-size: 11px; padding: 0 2px; }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<div class="caption"><b>草稿 1 · 看板（Kanban）</b> — 列 = 自定义状态；拖拽流转；过滤条按里程碑 / 仓库 / 标签 / 优先级；卡片携带里程碑、仓库、PR+CI 状态、截止日</div>
+<div class="frame">
+  <div class="sidebar">
+    <div class="logo">🌳 GitGrove</div>
+    <div class="nav">
+      <div class="nav-item">仓库</div>
+      <div class="nav-item">分支</div>
+      <div class="nav-item active">项目</div>
+      <div class="nav-item">配置</div>
+    </div>
+    <div class="side-hint">「项目」页签复用 #29 入口改造；旧 GitHub Projects 面板 P0 后退役</div>
+  </div>
+  <div class="main">
+    <div class="toolbar">
+      <span class="title">项目 · 看板</span>
+      <span class="chip on">里程碑: v1.2 自研项目管理</span>
+      <span class="chip">仓库: 全部 ▾</span>
+      <span class="chip">标签 ▾</span>
+      <span class="chip">优先级 ▾</span>
+      <span class="search">搜索任务…</span>
+      <span class="btn">+ 新建任务</span>
+    </div>
+    <div class="board">
+      <div class="col">
+        <div class="col-head"><span class="dot" style="background:var(--faint)"></span>Backlog <span class="count">3</span></div>
+        <div class="col-body">
+          <div class="card"><div class="t">多级同步：载体调研（git 仓 / 云盘 / 服务端）</div><div class="meta"><span class="prio p-low"></span><span class="tag ms">🏁 远期</span><span class="tag">#40</span></div></div>
+          <div class="card"><div class="t">表格视图（看板的备选渲染）</div><div class="meta"><span class="prio p-low"></span><span class="tag ms">🏁 v1.3</span></div></div>
+          <div class="card"><div class="t">任务评论与附件</div><div class="meta"><span class="prio p-low"></span><span class="tag ms">🏁 远期</span></div></div>
+          <div class="add-card">+ 添加</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="dot" style="background:var(--yellow)"></span>To Do <span class="count">3</span></div>
+        <div class="col-body">
+          <div class="card"><div class="t">GitHub issue 双向同步：字段映射表</div><div class="meta"><span class="prio p-medium"></span><span class="tag ms">🏁 v1.2</span><span class="tag repo">gitgrove</span></div></div>
+          <div class="card"><div class="t">分支面板：任务关联分支的反向显示</div><div class="meta"><span class="prio p-medium"></span><span class="tag ms">🏁 v1.2</span><span class="tag repo">gitgrove</span><span class="tag due">📅 09-15</span></div></div>
+          <div class="card"><div class="t">flake 测试：PowerShell 真机超时放宽</div><div class="meta"><span class="prio p-high"></span><span class="tag repo">gitgrove</span><span class="tag">infra</span></div></div>
+          <div class="add-card">+ 添加</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="dot" style="background:var(--accent)"></span>Doing <span class="count">2</span></div>
+        <div class="col-body">
+          <div class="card"><div class="t">看板视图：拖拽流转 + 自定义列</div><div class="meta"><span class="prio p-urgent"></span><span class="tag ms">🏁 v1.2</span><span class="tag repo">gitgrove</span><span class="tag pr-ci">PR #42 ⏳ CI</span></div></div>
+          <div class="card dragging"><div class="t">数据模型 + SQLite store（ULID / tombstone）</div><div class="meta"><span class="prio p-high"></span><span class="tag ms">🏁 v1.2</span><span class="tag repo">gitgrove</span><span class="tag pr-ok">PR #41 ✓</span><span class="tag due">📅 今天</span></div></div>
+          <div class="add-card">+ 添加</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="dot" style="background:var(--green)"></span>Done <span class="count">4</span></div>
+        <div class="col-body">
+          <div class="card"><div class="t">里程碑列表：进度聚合 + 逾期高亮</div><div class="meta"><span class="prio p-medium"></span><span class="tag ms">🏁 v1.2</span><span class="tag pr-ok">已合并</span></div></div>
+          <div class="card"><div class="t">方案文档评审与入库</div><div class="meta"><span class="prio p-medium"></span><span class="tag pr-ok">已合并</span></div></div>
+          <div class="card"><div class="t">#35 ZCode / explorer 修复</div><div class="meta"><span class="prio p-high"></span><span class="tag pr-ok">v1.1.0</span></div></div>
+          <div class="add-card">+ 添加</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><b>草稿 2 · 里程碑（Milestone）</b> — 进度条按状态分段；截止倒计时与逾期高亮；「今日聚焦」跨里程碑聚合 doing + 今日到期</div>
+<div class="frame">
+  <div class="sidebar">
+    <div class="logo">🌳 GitGrove</div>
+    <div class="nav">
+      <div class="nav-item">仓库</div>
+      <div class="nav-item">分支</div>
+      <div class="nav-item active">项目</div>
+      <div class="nav-item">配置</div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="toolbar">
+      <span class="title">项目 · 里程碑</span>
+      <span class="chip on">里程碑</span>
+      <span class="chip">看板</span>
+      <span class="chip">表格</span>
+      <span class="search">搜索…</span>
+      <span class="btn">+ 新建里程碑</span>
+    </div>
+    <div class="ms-list">
+      <div class="focus-strip">
+        <span class="label">⚡ 今日聚焦</span>
+        <span>3 个进行中 · 1 个今日到期：「数据模型 + SQLite store」</span>
+        <span style="margin-left:auto" class="chip">进入看板 →</span>
+      </div>
+      <div class="legend"><span><i style="background:var(--green)"></i>done</span><span><i style="background:var(--accent)"></i>doing</span><span><i style="background:var(--border)"></i>todo/backlog</span></div>
+
+      <div class="ms-row">
+        <div class="ms-top">
+          <span class="ms-name">🏁 v1.2 自研项目管理 P0</span>
+          <span class="ms-due">📅 09-20 · 还剩 11 天</span>
+          <span class="ms-pct">9 / 14 · 64%</span>
+        </div>
+        <div class="bar"><i class="done" style="width:50%"></i><i class="doing" style="width:14%"></i><i class="todo" style="width:36%"></i></div>
+        <div class="ms-sub"><span>仓库: gitgrove</span><span>doing 2 · todo 3 · backlog 2</span><span>urgent 1 · high 2</span></div>
+      </div>
+
+      <div class="ms-row overdue">
+        <div class="ms-top">
+          <span class="ms-name">🏁 v1.1.1 稳定性补丁</span>
+          <span class="ms-due over">📅 09-08 · 已逾期 1 天</span>
+          <span class="ms-pct">2 / 3 · 67%</span>
+        </div>
+        <div class="bar"><i class="done" style="width:67%"></i><i class="todo" style="width:33%"></i></div>
+        <div class="ms-sub"><span>剩余: flake PowerShell 测试（high）</span></div>
+      </div>
+
+      <div class="ms-row">
+        <div class="ms-top">
+          <span class="ms-name">🏁 v1.3 体验增强 P1</span>
+          <span class="ms-due">📅 10-10 · 还剩 31 天</span>
+          <span class="ms-pct">0 / 6 · 0%</span>
+        </div>
+        <div class="bar"><i class="todo" style="width:100%"></i></div>
+        <div class="ms-sub"><span>分支/PR 联动 · 表格视图 · issue 互通</span></div>
+      </div>
+
+      <div class="ms-row">
+        <div class="ms-top">
+          <span class="ms-name">🏁 远期（无截止）</span>
+          <span class="ms-due">多级同步 · 评论附件</span>
+          <span class="ms-pct">0 / 2</span>
+        </div>
+        <div class="bar"><i class="todo" style="width:100%"></i></div>
+        <div class="ms-sub"><span>关联 #40</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
