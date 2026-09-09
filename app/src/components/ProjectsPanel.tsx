@@ -3,42 +3,38 @@ import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
-import type { Project } from "../types";
+import type { Project, ProjectV2Field, ProjectV2Item } from "../types";
 import IconButton from "./IconButton";
 import { ExternalLink } from "./ProjectDetail";
-import {
-	isMissingProjectScope,
-	listOwnerProjects,
-	type ProjectV2Field,
-	type ProjectV2Item,
-	projectV2Details,
-} from "./ProjectsV2";
 import { ResourceState, useResource } from "./ResourceState";
 
 const TOKENS_URL = "https://github.com/settings/tokens";
 
+type ItemKind = "issue" | "pr" | "draft";
+function itemKind(item: ProjectV2Item): ItemKind {
+	if (item.contentType === "Issue") return "issue";
+	if (item.contentType === "PullRequest") return "pr";
+	return "draft";
+}
+
 export default function ProjectsPanel({ p }: { p: Project }) {
 	const gh = p.providerIdentity;
 	const s = useStore();
+	const hasProjectScope = useStore((x) => x.auth?.hasProjectScope);
 	const projects = useResource(p.id + ":projects-v2", () =>
-		gh ? listOwnerProjects(gh.owner) : Promise.resolve([]),
+		gh ? api.listProjectsV2(gh.owner, null) : Promise.resolve([]),
 	);
 	const [selected, setSelected] = useState<number | null>(null);
 	const [view, setView] = useState<"table" | "board">("table");
+	const [force, setForce] = useState(0);
 	const current =
 		projects.data?.find((x) => x.number === selected && !x.closed) ??
 		projects.data?.find((x) => !x.closed) ??
 		projects.data?.[0];
 	const details = useResource(
-		p.id +
-			":projects-v2:" +
-			(gh?.owner ?? "-") +
-			":" +
-			(current?.number ?? "-"),
+		p.id + ":project-v2:" + (current?.id ?? "-"),
 		() =>
-			gh && current
-				? projectV2Details(gh.owner, current.number)
-				: Promise.resolve(null),
+			current ? api.getProjectV2(current.id, force > 0) : Promise.resolve(null),
 	);
 	if (!gh)
 		return (
@@ -49,10 +45,13 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 		);
 	const retry = () => {
 		projects.reload();
+		setForce((n) => n + 1);
 		details.reload();
 	};
+	// 登录时已确认 token 缺少 project scope（false；null 为无法判断），直接展示引导。
+	if (hasProjectScope === false) return <ReauthGuide onRetry={retry} />;
 	const scopeError = [projects.error, details.error].find((e) =>
-		isMissingProjectScope(e),
+		api.isMissingProjectScope(e),
 	);
 	if (scopeError) return <ReauthGuide onRetry={retry} />;
 	if (projects.loading || projects.error)
@@ -78,15 +77,16 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 			/>
 		);
 	const openItem = (item: ProjectV2Item) => {
-		if (item.kind === "draft") return;
+		const kind = itemKind(item);
+		if (kind === "draft") return;
 		const here = (gh.owner + "/" + gh.repo).toLowerCase();
-		if (item.number !== null && item.repo?.toLowerCase() === here) {
+		if (item.number !== null && item.repo.toLowerCase() === here) {
 			// 先切页签（setTab 会清空 workItemFocus），再设置聚焦目标。
-			s.setTab(item.kind === "pr" ? "Pull Requests" : "Issues");
+			s.setTab(kind === "pr" ? "Pull Requests" : "Issues");
 			s.setWorkItemFocus({
 				pid: p.id,
 				number: item.number,
-				type: item.kind === "pr" ? "pr" : "issue",
+				type: kind,
 			});
 		} else if (item.url) {
 			openUrl(item.url).catch((error) => s.toast(String(error)));
@@ -143,6 +143,11 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 					<ExternalLink url={current.url}>在 GitHub 打开 ↗</ExternalLink>
 				)}
 			</div>
+			{current?.shortDescription && (
+				<p className="muted" style={{ margin: "0 0 10px" }}>
+					{current.shortDescription}
+				</p>
+			)}
 			{details.loading || details.error ? (
 				<ResourceState
 					loading={details.loading}
@@ -173,20 +178,22 @@ export default function ProjectsPanel({ p }: { p: Project }) {
 }
 
 function KindBadge({ item }: { item: ProjectV2Item }) {
-	if (item.kind === "draft") return <span className="badge">草稿</span>;
+	const kind = itemKind(item);
+	if (kind === "draft") return <span className="badge">草稿</span>;
 	return (
-		<span className={"badge " + (item.kind === "pr" ? "b-pr" : "b-issue")}>
-			{item.kind === "pr" ? "PR" : "Issue"}
+		<span className={"badge " + (kind === "pr" ? "b-pr" : "b-issue")}>
+			{kind === "pr" ? "PR" : "Issue"}
 		</span>
 	);
 }
 
 function StateChip({ item }: { item: ProjectV2Item }) {
-	if (item.kind === "draft" || !item.state) return null;
-	const open = item.state === "open";
+	const state = item.state.toUpperCase();
+	if (itemKind(item) === "draft" || !state) return null;
+	const open = state === "OPEN";
 	return (
 		<span className={"item-state " + (open ? "open" : "closed")}>
-			{item.state === "merged" ? "已合并" : open ? "开放" : "已关闭"}
+			{state === "MERGED" ? "已合并" : open ? "开放" : "已关闭"}
 		</span>
 	);
 }
@@ -250,7 +257,7 @@ function TableView({
 				</thead>
 				<tbody>
 					{items.map((item) => {
-						const clickable = item.kind !== "draft";
+						const clickable = itemKind(item) !== "draft";
 						return (
 							<tr
 								key={item.id}
@@ -265,15 +272,15 @@ function TableView({
 										{item.repo ? " · " + item.repo : ""}
 									</span>
 								</td>
-								{fields.map((f) => (
-									<td
-										key={f.id}
-										style={tdStyle}
-										title={item.fieldValues[f.name] ?? ""}
-									>
-										{item.fieldValues[f.name] ?? "—"}
-									</td>
-								))}
+								{fields.map((f) => {
+									const value =
+										f.name.toLowerCase() === "status" ? item.status : null;
+									return (
+										<td key={f.id} style={tdStyle} title={value ?? ""}>
+											{value ?? "—"}
+										</td>
+									);
+								})}
 							</tr>
 						);
 					})}
@@ -315,7 +322,7 @@ function BoardView({
 	const columns = [...status.options.map((o) => o.name), NO_STATUS];
 	const groups = new Map<string, ProjectV2Item[]>(columns.map((c) => [c, []]));
 	for (const item of items) {
-		const value = item.fieldValues[status.name];
+		const value = item.status;
 		const key = value && groups.has(value) ? value : NO_STATUS;
 		groups.get(key)?.push(item);
 	}
@@ -364,7 +371,7 @@ function BoardView({
 							}}
 						>
 							{list.map((item) => {
-								const clickable = item.kind !== "draft";
+								const clickable = itemKind(item) !== "draft";
 								return (
 									<button
 										key={item.id}
