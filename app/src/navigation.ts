@@ -19,7 +19,7 @@ export const TAB_LABELS: Record<string, string> = {
 	"Worktrees & Branches": "工作树与分支",
 	Issues: "Issues",
 	"Pull Requests": "Pull Requests",
-	Projects: "Projects",
+	Projects: "项目",
 	Actions: "Actions",
 };
 export type Visit = { sel: Selection; tab: string };
