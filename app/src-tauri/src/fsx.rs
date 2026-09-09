@@ -80,7 +80,10 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     if !p.exists() {
         return Err(format!("路径不存在，无法定位: {path}"));
     }
-    let mut c = if cfg!(target_os = "macos") {
+    // cfg! 是运行时宏，两个分支在所有平台都要可编译；explorer_arguments 只在非 macOS 存在，
+    // 所以用 #[cfg] 属性分别编译两个 let 绑定
+    #[cfg(target_os = "macos")]
+    let mut c = {
         let mut c = git::new_cmd("open");
         if p.is_dir() {
             c.arg(&path);
@@ -88,7 +91,9 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
             c.arg("-R").arg(&path);
         }
         c
-    } else {
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut c = {
         let mut c = git::new_cmd("explorer");
         c.args(explorer_arguments(&path, p.is_dir()));
         c
