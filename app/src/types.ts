@@ -43,6 +43,57 @@ export interface AuthState {
 	name: string;
 	avatarUrl: string;
 	source: string; // "keyring" | "gh-cli" | "pat"
+	/** 当前 token 是否具备 project scope；null = 无法判断（如 fine-grained PAT 无 X-OAuth-Scopes 头） */
+	hasProjectScope: boolean | null;
+}
+
+// ---- GitHub Projects V2 ----
+
+export interface ProjectV2Info {
+	id: string;
+	number: number;
+	title: string;
+	shortDescription: string;
+	url: string;
+	closed: boolean;
+	updatedAt: string;
+	ownerLogin: string;
+	ownerType: "user" | "org";
+}
+
+export interface ProjectV2FieldOption {
+	id: string;
+	name: string;
+}
+
+export interface ProjectV2Field {
+	id: string;
+	name: string;
+	dataType: string; // "SINGLE_SELECT" / "TEXT" / "NUMBER" / "DATE" / "ITERATION" ...
+	options: ProjectV2FieldOption[]; // 仅单选字段（如 Status）有值
+}
+
+export interface ProjectV2Item {
+	id: string;
+	contentType: "Issue" | "PullRequest" | "DraftIssue" | "";
+	title: string;
+	number: number | null;
+	state: string;
+	url: string;
+	repo: string; // nameWithOwner
+	status: string | null; // Status 单选字段当前值
+	statusOptionId: string | null;
+	updatedAt: string;
+}
+
+export interface ProjectV2Board {
+	project: ProjectV2Info;
+	fields: ProjectV2Field[];
+	items: ProjectV2Item[];
+	/** project 内 items 总数（GraphQL totalCount） */
+	totalCount: number;
+	/** 达到后端翻页上限（500 条）未拉全时为 true */
+	truncated: boolean;
 }
 
 export interface RepoInfo {

@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { type DialogState, useStore } from "../store";
+import { Button } from "./ui/button";
+import {
+	DialogContent,
+	DialogDescription,
+	DialogRoot,
+	DialogTitle,
+} from "./ui/dialog";
+import { Input, Textarea } from "./ui/input";
+import { Select } from "./ui/select";
 
 export function Toast() {
 	const msg = useStore((s) => s.toastMsg);
@@ -15,10 +24,16 @@ export function Toast() {
 }
 export function Dialog() {
 	const dialog = useStore((s) => s.dialog);
-	return dialog ? <DialogContent key={dialog.title} dialog={dialog} /> : null;
+	// 关闭动画播完前保留最后一份配置，避免内容提前卸载。
+	const [shown, setShown] = useState<DialogState | null>(dialog);
+	useEffect(() => {
+		if (dialog) setShown(dialog);
+	}, [dialog]);
+	if (!shown) return null;
+	return <DialogBody key={shown.title} open={!!dialog} dialog={shown} />;
 }
-function DialogContent({ dialog }: { dialog: DialogState }) {
-	const ref = useRef<HTMLDialogElement>(null);
+function DialogBody({ open, dialog }: { open: boolean; dialog: DialogState }) {
+	const contentRef = useRef<HTMLDivElement>(null);
 	const busyRef = useRef(false);
 	const [value, setValue] = useState(dialog.defaultValue ?? "");
 	const [values, setValues] = useState<Record<string, string>>(
@@ -29,24 +44,6 @@ function DialogContent({ dialog }: { dialog: DialogState }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const close = useStore((s) => s.closeDialog);
-	useEffect(() => {
-		const previous = document.activeElement as HTMLElement | null;
-		const modal = ref.current!;
-		modal.showModal();
-		const first = modal.querySelector<HTMLElement>(
-			dialog.danger ? ".cancel-btn" : "input, select, textarea, .cancel-btn",
-		);
-		first?.focus();
-		return () => {
-			modal.close();
-			if (previous?.isConnected && previous.getClientRects().length)
-				previous.focus();
-			else
-				document
-					.querySelector<HTMLElement>('main .tab[aria-current="page"]')
-					?.focus();
-		};
-	}, [dialog.danger]);
 	const execute = async (secondary = false) => {
 		if (busyRef.current) return;
 		const validation = !secondary && dialog.validate?.(value, values);
@@ -70,148 +67,123 @@ function DialogContent({ dialog }: { dialog: DialogState }) {
 		}
 	};
 	return (
-		<dialog
-			ref={ref}
-			className="dialog"
-			aria-labelledby="dialog-title"
-			aria-describedby="dialog-message"
-			onKeyDown={(e) => {
-				if (e.key !== "Tab") return;
-				const targets = Array.from(
-					e.currentTarget.querySelectorAll<HTMLElement>(
-						'input:not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled), a[href], [tabindex="0"]',
-					),
-				).filter((element) => element.getClientRects().length > 0);
-				const first = targets[0];
-				const last = targets[targets.length - 1];
-				if (!first) {
-					e.preventDefault();
-					e.currentTarget.focus();
-				} else if (e.shiftKey && document.activeElement === first) {
-					e.preventDefault();
-					last.focus();
-				} else if (!e.shiftKey && document.activeElement === last) {
-					e.preventDefault();
-					first.focus();
-				}
-			}}
-			onCancel={(e) => {
-				e.preventDefault();
-				if (!busyRef.current) close();
+		<DialogRoot
+			open={open}
+			onOpenChange={(next) => {
+				if (!next && !busyRef.current) close();
 			}}
 		>
-			<form
-				onSubmit={(e) => {
+			<DialogContent
+				ref={contentRef}
+				onOpenAutoFocus={(e) => {
+					// 危险操作默认聚焦取消按钮，其余交给 Radix 聚焦首个可交互控件。
+					if (!dialog.danger) return;
 					e.preventDefault();
-					void execute();
+					contentRef.current
+						?.querySelector<HTMLElement>(".cancel-btn")
+						?.focus();
 				}}
+				onPointerDownOutside={(e) => e.preventDefault()}
+				onInteractOutside={(e) => e.preventDefault()}
 			>
-				<h3 id="dialog-title">{dialog.title}</h3>
-				<div id="dialog-message" className="msg">
-					{dialog.message}
-				</div>
-				{dialog.kind === "prompt" && !dialog.fields && (
-					<label className="field">
-						<span>{dialog.placeholder ?? "输入内容"}</span>
-						<input
-							className="input"
-							required
-							value={value}
-							disabled={busy}
-							placeholder={dialog.placeholder}
-							onChange={(e) => setValue(e.target.value)}
-						/>
-					</label>
-				)}
-				{dialog.fields?.map((f) => (
-					<label className="field" key={f.name}>
-						<span>
-							{f.label}
-							{f.required ? " *" : ""}
-						</span>
-						{f.type === "select" ? (
-							<select
-								className="input"
-								value={values[f.name]}
+				<form
+					onSubmit={(e) => {
+						e.preventDefault();
+						void execute();
+					}}
+				>
+					<DialogTitle>{dialog.title}</DialogTitle>
+					<DialogDescription className="msg">
+						{dialog.message}
+					</DialogDescription>
+					{dialog.kind === "prompt" && !dialog.fields && (
+						<label className="field">
+							<span>{dialog.placeholder ?? "输入内容"}</span>
+							<Input
+								required
+								value={value}
 								disabled={busy}
-								required={f.required}
-								onChange={(e) =>
-									setValues((v) => ({ ...v, [f.name]: e.target.value }))
-								}
-							>
-								{!f.defaultValue && <option value="">请选择</option>}
-								{f.options?.map((o) => (
-									<option key={o} value={o}>
-										{o}
-									</option>
-								))}
-							</select>
-						) : f.type === "textarea" ? (
-							<textarea
-								className="input"
-								value={values[f.name]}
-								disabled={busy}
-								required={f.required}
-								onChange={(e) =>
-									setValues((v) => ({ ...v, [f.name]: e.target.value }))
-								}
+								placeholder={dialog.placeholder}
+								onChange={(e) => setValue(e.target.value)}
 							/>
-						) : (
-							<input
-								className="input"
-								type={f.type ?? "text"}
-								value={values[f.name]}
-								disabled={busy}
-								required={f.required}
-								onChange={(e) =>
-									setValues((v) => ({ ...v, [f.name]: e.target.value }))
-								}
-							/>
-						)}
-						{f.help && <small>{f.help}</small>}
-					</label>
-				))}
-				{dialog.describe && (
-					<div className="operation-preview">
-						{dialog.describe(value, values)}
-					</div>
-				)}
-				{error && (
-					<div className="inline-error" role="alert">
-						{error}
-					</div>
-				)}
-				<div className="ops">
-					<button
-						type="button"
-						className="btn cancel-btn"
-						disabled={busy}
-						onClick={close}
-					>
-						取消
-					</button>
-					{dialog.secondaryText && (
-						<button
-							type="button"
-							className="btn"
-							disabled={busy}
-							onClick={() => void execute(true)}
-						>
-							{dialog.secondaryText}
-						</button>
+						</label>
 					)}
-					<button
-						type="submit"
-						className={"btn " + (dialog.danger ? "danger" : "primary")}
-						disabled={busy}
-					>
-						{busy
-							? "处理中…"
-							: (dialog.okText ??
-								(dialog.kind === "confirm" ? "确认操作" : "保存"))}
-					</button>
-				</div>
-			</form>
-		</dialog>
+					{dialog.fields?.map((f) => (
+						<label className="field" key={f.name}>
+							<span>
+								{f.label}
+								{f.required ? " *" : ""}
+							</span>
+							{f.type === "select" ? (
+								<Select
+									name={f.name}
+									value={values[f.name]}
+									disabled={busy}
+									required={f.required}
+									placeholder={f.defaultValue ? undefined : "请选择"}
+									options={(f.options ?? []).map((o) => ({
+										value: o,
+										label: o,
+									}))}
+									onValueChange={(v) =>
+										setValues((prev) => ({ ...prev, [f.name]: v }))
+									}
+								/>
+							) : f.type === "textarea" ? (
+								<Textarea
+									value={values[f.name]}
+									disabled={busy}
+									required={f.required}
+									onChange={(e) =>
+										setValues((v) => ({ ...v, [f.name]: e.target.value }))
+									}
+								/>
+							) : (
+								<Input
+									type={f.type ?? "text"}
+									value={values[f.name]}
+									disabled={busy}
+									required={f.required}
+									onChange={(e) =>
+										setValues((v) => ({ ...v, [f.name]: e.target.value }))
+									}
+								/>
+							)}
+							{f.help && <small>{f.help}</small>}
+						</label>
+					))}
+					{dialog.describe && (
+						<div className="operation-preview">
+							{dialog.describe(value, values)}
+						</div>
+					)}
+					{error && (
+						<div className="inline-error" role="alert">
+							{error}
+						</div>
+					)}
+					<div className="ops">
+						<Button className="cancel-btn" disabled={busy} onClick={close}>
+							取消
+						</Button>
+						{dialog.secondaryText && (
+							<Button disabled={busy} onClick={() => void execute(true)}>
+								{dialog.secondaryText}
+							</Button>
+						)}
+						<Button
+							type="submit"
+							variant={dialog.danger ? "danger" : "primary"}
+							disabled={busy}
+						>
+							{busy
+								? "处理中…"
+								: (dialog.okText ??
+									(dialog.kind === "confirm" ? "确认操作" : "保存"))}
+						</Button>
+					</div>
+				</form>
+			</DialogContent>
+		</DialogRoot>
 	);
 }

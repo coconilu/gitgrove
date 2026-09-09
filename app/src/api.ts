@@ -12,6 +12,8 @@ import type {
 	LinkedWorkItem,
 	PrInfo,
 	Project,
+	ProjectV2Board,
+	ProjectV2Info,
 	RepoInfo,
 	RunInfo,
 	StatusMap,
@@ -28,6 +30,28 @@ export const logout = () => invoke<void>("logout");
 // ---- My GitHub ----
 export const listMyRepos = () => invoke<RepoInfo[]>("list_my_repos");
 
+// ---- Projects V2 ----
+/** 后端 typed error 前缀：token 缺少 project scope 时抛出，前端据此引导重新生成 classic PAT */
+export const ERR_MISSING_PROJECT_SCOPE = "MISSING_PROJECT_SCOPE:";
+export const isMissingProjectScope = (e: unknown) =>
+	typeof e === "string" && e.startsWith(ERR_MISSING_PROJECT_SCOPE);
+/** 后端 typed error 前缀：token 失效/被吊销（HTTP 401 Bad credentials），引导重新登录 */
+export const ERR_BAD_CREDENTIALS = "BAD_CREDENTIALS:";
+export const isBadCredentials = (e: unknown) =>
+	typeof e === "string" && e.startsWith(ERR_BAD_CREDENTIALS);
+/** owner 为空 = 当前登录用户；ownerType 不给时后端自动尝试 user / org 两条路径 */
+export const listProjectsV2 = (
+	owner?: string | null,
+	ownerType?: "user" | "org" | null,
+) =>
+	invoke<ProjectV2Info[]>("list_projects_v2", {
+		owner: owner ?? null,
+		ownerType: ownerType ?? null,
+	});
+/** 读取单个 project 的字段与 items；后端内存缓存 5 分钟，refresh=true 强制刷新 */
+export const getProjectV2 = (projectId: string, refresh = false) =>
+	invoke<ProjectV2Board>("get_project_v2", { projectId, refresh });
+
 // ---- clone / 项目 ----
 export const checkCloneTarget = (repo: string) =>
 	invoke<CloneTargetInfo>("check_clone_target", { repo });
@@ -42,6 +66,28 @@ export const removeProject = (projectId: string, deleteFiles: boolean) =>
 // ---- worktree / 分支 ----
 export const listBranches = (projectId: string) =>
 	invoke<BranchInfo[]>("list_branches", { projectId });
+
+/** 被保护跳过的分支；reason：当前分支 / 主干分支 / 已在 worktree 检出 / 未合并到主干 / 本地分支不存在 */
+export interface SkippedBranch {
+	name: string;
+	reason: string;
+}
+/** 删除已合并分支的预览：deletable 展示在确认弹窗里，skipped 列出被保护跳过的分支 */
+export interface BranchDeletePlan {
+	base: string;
+	deletable: string[];
+	skipped: SkippedBranch[];
+}
+export interface BranchDeleteResult {
+	deleted: string[];
+	deletedCount: number;
+	skipped: SkippedBranch[];
+	failed: SkippedBranch[];
+}
+export const mergedBranchesPlan = (projectId: string) =>
+	invoke<BranchDeletePlan>("merged_branches_plan", { projectId });
+export const deleteMergedBranches = (projectId: string, branches: string[]) =>
+	invoke<BranchDeleteResult>("delete_merged_branches", { projectId, branches });
 export const createWorktree = (
 	projectId: string,
 	branch: string,

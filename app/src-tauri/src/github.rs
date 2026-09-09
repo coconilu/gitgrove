@@ -81,7 +81,7 @@ impl Http {
     }
 
     /// 连接/超时失败时换另一侧 client 重试一次
-    async fn send(
+    pub(crate) async fn send(
         &self,
         mk_req: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, String> {
@@ -148,6 +148,8 @@ pub struct AuthState2 {
     pub name: String,
     pub avatar_url: String,
     pub source: String,
+    /// 当前 token 是否具备 project scope；None = 无法判断（响应无 X-OAuth-Scopes 头，如 fine-grained PAT）
+    pub has_project_scope: Option<bool>,
 }
 
 fn logged_out() -> AuthState2 {
@@ -157,31 +159,68 @@ fn logged_out() -> AuthState2 {
         name: String::new(),
         avatar_url: String::new(),
         source: String::new(),
+        has_project_scope: None,
     }
 }
 
+/// 从 /user 响应头 X-OAuth-Scopes 解析是否具备 project scope
+fn has_project_scope(headers: &reqwest::header::HeaderMap) -> Option<bool> {
+    let v = headers.get("x-oauth-scopes")?.to_str().ok()?;
+    Some(v.split(',').map(|s| s.trim()).any(|s| s == "project" || s == "read:project"))
+}
+
 async fn fetch_viewer(http: &Http, token: &str, source: &str) -> Result<AuthState2, String> {
-    let v = gh_get(http, token, "/user", &[]).await?;
+    // 不用 gh_get：需要同时读响应头里的 X-OAuth-Scopes
+    let resp = http
+        .send(|c| {
+            c.get("https://api.github.com/user")
+                .bearer_auth(token)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+        })
+        .await?;
+    let status = resp.status();
+    let project_scope = has_project_scope(resp.headers());
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("GitHub API {status}: {}", &text[..text.len().min(300)]));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))?;
     Ok(AuthState2 {
         logged_in: true,
         login: v["login"].as_str().unwrap_or("").to_string(),
         name: v["name"].as_str().unwrap_or("").to_string(),
         avatar_url: v["avatar_url"].as_str().unwrap_or("").to_string(),
         source: source.to_string(),
+        has_project_scope: project_scope,
     })
 }
 
 #[tauri::command]
 pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, String> {
+    let record = |me: &AuthState2| *state.has_project_scope.lock().unwrap() = me.has_project_scope;
+    // 失败 / 未登录路径统一清空，避免残留旧 token 的 scope 状态
+    let out = |state: &AppState| {
+        *state.has_project_scope.lock().unwrap() = None;
+        logged_out()
+    };
     // 内存 / keyring
     if let Ok(t) = ensure_token(&state) {
-        return fetch_viewer(&state.http, &t, "keyring").await.or_else(|_| Ok(logged_out()));
+        if let Ok(me) = fetch_viewer(&state.http, &t, "keyring").await {
+            record(&me);
+            return Ok(me);
+        }
+        return Ok(out(&state));
     }
     // gh CLI 兜底
     if let Some(t) = try_gh_cli(&state) {
-        return fetch_viewer(&state.http, &t, "gh CLI").await.or_else(|_| Ok(logged_out()));
+        if let Ok(me) = fetch_viewer(&state.http, &t, "gh CLI").await {
+            record(&me);
+            return Ok(me);
+        }
+        return Ok(out(&state));
     }
-    Ok(logged_out())
+    Ok(out(&state))
 }
 
 #[tauri::command]
@@ -190,12 +229,16 @@ pub async fn login_pat(state: State<'_, AppState>, token: String) -> Result<Auth
     let entry = keyring_entry()?;
     entry.set_password(&token).map_err(|e| format!("写入凭据管理器失败: {e}"))?;
     *state.token.lock().unwrap() = Some(token);
+    *state.has_project_scope.lock().unwrap() = me.has_project_scope;
+    *state.projects_v2_cache.lock().unwrap() = None;
     Ok(me)
 }
 
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     *state.token.lock().unwrap() = None;
+    *state.has_project_scope.lock().unwrap() = None;
+    *state.projects_v2_cache.lock().unwrap() = None;
     if let Ok(entry) = keyring_entry() {
         let _ = entry.delete_credential();
     }
