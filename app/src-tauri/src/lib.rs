@@ -4,6 +4,7 @@ mod git;
 mod github;
 mod launch;
 mod projects;
+mod projects_v2;
 mod store;
 #[cfg(windows)]
 mod window_theme;
@@ -13,6 +14,10 @@ use std::sync::Mutex;
 pub struct AppState {
     pub token: Mutex<Option<String>>,
     pub http: github::Http,
+    /// 当前 token 是否具备 project scope（None = 未探测/无法判断），登录与 auth_status 时记录
+    pub has_project_scope: Mutex<Option<bool>>,
+    /// Projects V2 board 内存缓存（显式刷新 / 换 project / 过期时重建）
+    pub projects_v2_cache: Mutex<Option<projects_v2::BoardCache>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,6 +28,8 @@ pub fn run() {
         .manage(AppState {
             token: Mutex::new(None),
             http: github::Http::new(),
+            has_project_scope: Mutex::new(None),
+            projects_v2_cache: Mutex::new(None),
         })
         .setup(|_app| {
             #[cfg(windows)]
@@ -41,6 +48,9 @@ pub fn run() {
             github::logout,
             // My GitHub
             github::list_my_repos,
+            // Projects V2
+            projects_v2::list_projects_v2,
+            projects_v2::get_project_v2,
             // 项目 / clone
             projects::check_clone_target,
             projects::clone_repo,
