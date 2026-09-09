@@ -301,6 +301,22 @@ pub fn list_branches(project_id: String) -> Result<Vec<git::BranchInfo>, String>
     git::branches(Path::new(&sp.local_path))
 }
 
+/// 删除已合并分支的预览：返回将删除的清单（供前端确认弹窗）与被保护跳过的分支
+#[tauri::command]
+pub fn merged_branches_plan(project_id: String) -> Result<git::BranchDeletePlan, String> {
+    let st = store::load();
+    let sp = find_project(&st, &project_id)?;
+    git::merged_branch_plan(Path::new(&sp.local_path))
+}
+
+/// 批量删除本地分支（确认后执行）；返回 deletedCount 供前端反馈「成功删除 N 个」
+#[tauri::command]
+pub fn delete_merged_branches(project_id: String, branches: Vec<String>) -> Result<git::BranchDeleteResult, String> {
+    let st = store::load();
+    let sp = find_project(&st, &project_id)?;
+    git::delete_local_branches(Path::new(&sp.local_path), &branches)
+}
+
 fn upsert_checkout_meta(sp: &mut StoredProject, path: &str, linked: Option<LinkedWorkItem>) {
     sp.hidden_worktrees.retain(|h| h != path);
     if let Some(c) = sp.checkouts.iter_mut().find(|c| c.path == path) {

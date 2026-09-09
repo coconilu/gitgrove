@@ -298,6 +298,118 @@ pub fn branches(repo: &Path) -> Result<Vec<BranchInfo>, String> {
     Ok(list)
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedBranch {
+    pub name: String,
+    /// 跳过原因：当前分支 / 主干分支 / 已在 worktree 检出 / 未合并到主干
+    pub reason: String,
+}
+
+/// 删除前预览：deletable 将出现在确认弹窗里
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchDeletePlan {
+    pub base: String,
+    pub deletable: Vec<String>,
+    pub skipped: Vec<SkippedBranch>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchDeleteResult {
+    pub deleted: Vec<String>,
+    pub deleted_count: u32,
+    pub skipped: Vec<SkippedBranch>,
+    pub failed: Vec<SkippedBranch>,
+}
+
+/// 本地分支名集合（refs/heads）
+fn local_branch_names(repo: &Path) -> Result<Vec<String>, String> {
+    let out = run_in(repo, &["for-each-ref", "--format=%(refname:strip=2)", "refs/heads"])?;
+    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+}
+
+/// 已合并进 base 的本地分支（git branch --merged <base> 语义）
+pub fn merged_local_branches(repo: &Path, base: &str) -> Result<Vec<String>, String> {
+    // base 本地不存在时退到 origin/<base>
+    let base_ref = if run_in(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")]).is_ok() {
+        base.to_string()
+    } else {
+        format!("refs/remotes/origin/{base}")
+    };
+    let out = run_in(repo, &["for-each-ref", &format!("--merged={base_ref}"), "--format=%(refname:strip=2)", "refs/heads"])?;
+    Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+}
+
+/// 被任意 worktree 检出的分支集合（这些分支 git 拒绝删除）
+fn checked_out_branches(repo: &Path) -> Vec<String> {
+    worktree_list(repo)
+        .map(|wts| wts.into_iter().filter_map(|w| w.branch).collect())
+        .unwrap_or_default()
+}
+
+fn classify_branch(name: &str, current: &str, base: &str, checked_out: &[String], merged: &[String]) -> Option<String> {
+    if name == current {
+        return Some("当前分支".into());
+    }
+    if name == base || name == "master" || name == "main" {
+        return Some("主干分支".into());
+    }
+    if checked_out.iter().any(|b| b == name) {
+        return Some("已在 worktree 检出".into());
+    }
+    if !merged.iter().any(|b| b == name) {
+        return Some("未合并到主干".into());
+    }
+    None
+}
+
+/// 删除已合并分支的预览清单：相对主干 base，保护当前/主干/未合并/已检出分支
+pub fn merged_branch_plan(repo: &Path) -> Result<BranchDeletePlan, String> {
+    let base = default_branch(repo);
+    let current = current_branch(repo);
+    let checked_out = checked_out_branches(repo);
+    let merged = merged_local_branches(repo, &base)?;
+    let mut deletable = Vec::new();
+    let mut skipped = Vec::new();
+    for name in local_branch_names(repo)? {
+        match classify_branch(&name, &current, &base, &checked_out, &merged) {
+            Some(reason) => skipped.push(SkippedBranch { name, reason }),
+            None => deletable.push(name),
+        }
+    }
+    Ok(BranchDeletePlan { base, deletable, skipped })
+}
+
+/// 批量删除本地分支；每个名字都重新过一遍保护规则，未通过的一律跳过不删
+pub fn delete_local_branches(repo: &Path, names: &[String]) -> Result<BranchDeleteResult, String> {
+    let base = default_branch(repo);
+    let current = current_branch(repo);
+    let checked_out = checked_out_branches(repo);
+    let merged = merged_local_branches(repo, &base)?;
+    let locals = local_branch_names(repo)?;
+    let mut deleted = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    for name in names {
+        if let Some(reason) = classify_branch(name, &current, &base, &checked_out, &merged) {
+            skipped.push(SkippedBranch { name: name.clone(), reason });
+            continue;
+        }
+        if !locals.iter().any(|b| b == name) {
+            failed.push(SkippedBranch { name: name.clone(), reason: "本地分支不存在".into() });
+            continue;
+        }
+        match run_in(repo, &["branch", "-d", name]) {
+            Ok(_) => deleted.push(name.clone()),
+            Err(e) => failed.push(SkippedBranch { name: name.clone(), reason: e }),
+        }
+    }
+    let deleted_count = deleted.len() as u32;
+    Ok(BranchDeleteResult { deleted, deleted_count, skipped, failed })
+}
+
 fn extract_num(track: &str, key: &str) -> Option<u32> {
     let i = track.find(key)?;
     let rest = &track[i + key.len()..];

@@ -214,16 +214,73 @@ function Overview({ p }: { p: Project }) {
 function Worktrees({ p }: { p: Project }) {
 	const { ci, setSel, setView, sel, projectsLoading, refreshProjects, toast } =
 		useStore();
+	const openDialog = useStore((s) => s.openDialog);
 	const currentCid = activeCheckout([p], sel)?.c.id;
 	const branches = useResource(p.id + ":branches", () =>
 		api.listBranches(p.id),
 	);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
+	// 默认开启过滤：只显示本地分支；关闭后 origin/xxx 远程分支带「远程」标识一起列出
+	const [hideRemote, setHideRemote] = useState(true);
+	const [pruning, setPruning] = useState(false);
 	const enter = (cid: string) => {
 		setSel({ kind: "checkout", cid });
 		setView("projects");
 	};
+	const pruneMerged = async () => {
+		setPruning(true);
+		setError("");
+		try {
+			const plan = await api.mergedBranchesPlan(p.id);
+			if (!plan.deletable.length) {
+				toast("没有可删除的已合并分支（相对主干 " + plan.base + "）");
+				return;
+			}
+			openDialog({
+				kind: "confirm",
+				title: "删除已合并分支",
+				danger: true,
+				okText: "删除 " + plan.deletable.length + " 个分支",
+				message:
+					"以下本地分支已合并进主干 " +
+					plan.base +
+					"，删除后不可恢复。当前分支、主干和未合并分支已被自动跳过。",
+				describe: () =>
+					"将删除：\n" +
+					plan.deletable.map((n) => "· " + n).join("\n") +
+					(plan.skipped.length
+						? "\n\n跳过（受保护）：\n" +
+							plan.skipped
+								.map((s) => "· " + s.name + "（" + s.reason + "）")
+								.join("\n")
+						: ""),
+				onSubmit: async () => {
+					const res = await api.deleteMergedBranches(p.id, plan.deletable);
+					branches.reload();
+					void refreshProjects();
+					toast(
+						"成功删除 " +
+							res.deletedCount +
+							" 个分支" +
+							(res.failed.length
+								? "；" +
+									res.failed.length +
+									" 个失败：" +
+									res.failed
+										.map((f) => f.name + "（" + f.reason + "）")
+										.join("、")
+								: ""),
+					);
+				},
+			});
+		} catch (e) {
+			setError(String(e));
+		} finally {
+			setPruning(false);
+		}
+	};
+	const visible = (branches.data ?? []).filter((b) => !hideRemote || !b.remote);
 	return (
 		<>
 			<div className="page-heading">
@@ -284,21 +341,48 @@ function Worktrees({ p }: { p: Project }) {
 					</div>
 				))}
 			</div>
-			<h3 className="section-title">仓库分支</h3>
+			<div className="workflow-heading" style={{ marginTop: 26 }}>
+				<h3 className="section-title" style={{ margin: 0 }}>
+					仓库分支
+				</h3>
+				<div className="ops">
+					<button
+						className={"btn sm" + (hideRemote ? " active" : "")}
+						aria-pressed={hideRemote}
+						title="开启后只显示本地分支；关闭后远程分支（origin/xxx）带「远程」标识一起列出"
+						onClick={() => setHideRemote(!hideRemote)}
+					>
+						过滤远程分支
+					</button>
+					<button
+						className="btn sm danger"
+						disabled={pruning || branches.loading}
+						onClick={() => void pruneMerged()}
+					>
+						{pruning ? "检查中…" : "删除已合并分支"}
+					</button>
+				</div>
+			</div>
 			{branches.loading || branches.error ? (
 				<ResourceState
 					loading={branches.loading}
 					error={branches.error}
 					onRetry={branches.reload}
 				/>
-			) : !branches.data?.length ? (
+			) : !visible.length ? (
 				<ResourceState
-					title="没有可显示的分支"
-					detail="新仓库可能还没有提交。"
+					title={
+						branches.data?.length ? "没有本地分支可显示" : "没有可显示的分支"
+					}
+					detail={
+						branches.data?.length
+							? "当前已开启远程分支过滤；关闭「过滤远程分支」开关可查看 origin/xxx 远程分支。"
+							: "新仓库可能还没有提交。"
+					}
 				/>
 			) : (
 				<div className="branch-list">
-					{branches.data.map((b) => {
+					{visible.map((b) => {
 						const checkout = p.checkouts.find(
 							(c) => !b.remote && c.branch === b.name,
 						);
