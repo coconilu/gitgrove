@@ -76,6 +76,10 @@ pub fn trash_path(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
+    // 路径不存在时 explorer 会静默落到默认位置（文档），提前报错
+    if !p.exists() {
+        return Err(format!("路径不存在，无法定位: {path}"));
+    }
     let mut c = if cfg!(target_os = "macos") {
         let mut c = git::new_cmd("open");
         if p.is_dir() {
@@ -86,14 +90,46 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
         c
     } else {
         let mut c = git::new_cmd("explorer");
-        if p.is_dir() {
-            c.arg(&path);
-        } else {
-            c.arg(format!("/select,{}", path.replace('/', "\\")));
-        }
+        c.args(explorer_arguments(&path, p.is_dir()));
         c
     };
     // explorer 经常返回非零退出码，忽略之
     c.spawn().map_err(|e| format!("无法打开文件管理器: {e}"))?;
     Ok(())
+}
+
+// explorer.exe 只认反斜杠路径；git 输出（worktree list 等）是正斜杠，
+// 直接传入会被静默忽略并打开默认位置
+#[cfg(not(target_os = "macos"))]
+fn explorer_arguments(path: &str, is_dir: bool) -> Vec<String> {
+    let native = path.replace('/', "\\");
+    if is_dir {
+        vec![native]
+    } else {
+        vec![format!("/select,{native}")]
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::explorer_arguments;
+
+    #[test]
+    fn explorer_args_use_native_separators() {
+        // git worktree list --porcelain 输出正斜杠路径，explorer 需要反斜杠
+        let mixed = "C:/Users/admin/gh-projects/demo";
+        assert_eq!(
+            explorer_arguments(mixed, true),
+            vec![r"C:\Users\admin\gh-projects\demo"]
+        );
+        assert_eq!(
+            explorer_arguments(mixed, false),
+            vec![r"/select,C:\Users\admin\gh-projects\demo"]
+        );
+        // 已是反斜杠的路径保持不变
+        assert_eq!(
+            explorer_arguments(r"C:\proj\demo", true),
+            vec![r"C:\proj\demo"]
+        );
+    }
 }
