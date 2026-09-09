@@ -10,7 +10,7 @@ import { abText, CiBadge, LinkBadge, newWorktree } from "./CheckoutActions";
 import IconButton from "./IconButton";
 import MarkdownView from "./MarkdownView";
 import { relTime } from "./MyGitHub";
-import ProjectsPanel from "./ProjectsPanel";
+import PmPanel from "./pm/PmPanel";
 import { ResourceState, useResource } from "./ResourceState";
 import { Select } from "./ui/select";
 
@@ -42,7 +42,7 @@ export default function ProjectDetail({ p }: { p: Project }) {
 			{tab === "Worktrees & Branches" && <Worktrees p={p} />}
 			{tab === "Issues" && <WorkItems p={p} kind="issue" />}
 			{tab === "Pull Requests" && <WorkItems p={p} kind="pr" />}
-			{tab === "Projects" && <ProjectsPanel p={p} />}
+			{tab === "Projects" && <PmPanel p={p} />}
 			{tab === "Actions" && <Actions p={p} />}
 		</div>
 	);
