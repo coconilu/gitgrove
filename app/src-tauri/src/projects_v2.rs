@@ -1,8 +1,9 @@
 // GitHub Projects V2（GraphQL）只读访问层：项目列表 / project 字段与 items、scope 检测、内存缓存
 //
 // 认证结论（issue #29）：只能用 classic PAT 勾选 project scope；老 token 没有该 scope，
-// GitHub 返回 INSUFFICIENT_SCOPES（或 401），统一映射为 ERR_MISSING_PROJECT_SCOPE，
-// 前端按此前缀识别并引导重新生成 token。
+// GitHub 返回 200 + INSUFFICIENT_SCOPES errors，映射为 ERR_MISSING_PROJECT_SCOPE，
+// 前端按此前缀识别并引导重新生成 token；HTTP 401（Bad credentials，token 失效/被吊销）
+// 单独映射为 ERR_BAD_CREDENTIALS。
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -14,6 +15,9 @@ use crate::AppState;
 /// 前端按此字符串前缀识别 typed error，引导用户重新授权
 pub const ERR_MISSING_PROJECT_SCOPE: &str =
     "MISSING_PROJECT_SCOPE: 当前 token 无权访问 Projects V2，请重新生成 classic PAT 并勾选 project scope 后重新登录";
+
+/// HTTP 401 = token 无效或已被吊销（Bad credentials），与缺 scope 是两种情形
+pub const ERR_BAD_CREDENTIALS: &str = "BAD_CREDENTIALS: GitHub token 无效或已被吊销，请重新登录";
 
 /// items 列表缓存有效期；refresh=true 可强制绕过
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -73,6 +77,10 @@ pub struct ProjectV2Board {
     pub project: ProjectV2Info,
     pub fields: Vec<ProjectV2Field>,
     pub items: Vec<ProjectV2Item>,
+    /// project 内 items 总数（GraphQL totalCount）
+    pub total_count: u64,
+    /// 达到翻页上限（MAX_ITEM_PAGES × 100 条）未拉全时为 true
+    pub truncated: bool,
 }
 
 /// get_project_v2 的内存缓存（挂在 AppState）
@@ -86,7 +94,7 @@ fn token_fp(token: &str) -> &str {
     &token[token.len().saturating_sub(6)..]
 }
 
-/// GraphQL POST；HTTP 401 与响应里的 INSUFFICIENT_SCOPES 统一映射为 ERR_MISSING_PROJECT_SCOPE
+/// GraphQL POST；HTTP 401 映射为 ERR_BAD_CREDENTIALS，响应里的 INSUFFICIENT_SCOPES 映射为 ERR_MISSING_PROJECT_SCOPE
 async fn gql(http: &Http, token: &str, query: &str, variables: Value) -> Result<Value, String> {
     let resp = http
         .send(|c| {
@@ -100,12 +108,20 @@ async fn gql(http: &Http, token: &str, query: &str, variables: Value) -> Result<
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
     if status.as_u16() == 401 {
-        return Err(ERR_MISSING_PROJECT_SCOPE.into());
+        return Err(ERR_BAD_CREDENTIALS.into());
     }
     if !status.is_success() {
         return Err(format!("GitHub GraphQL {status}: {}", &text[..text.len().min(300)]));
     }
     serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))
+}
+
+/// 已知 token 缺 project scope 时 fail-fast，省一次注定失败的 GraphQL 调用
+fn check_known_scope(state: &AppState) -> Result<(), String> {
+    if *state.has_project_scope.lock().unwrap() == Some(false) {
+        return Err(ERR_MISSING_PROJECT_SCOPE.into());
+    }
+    Ok(())
 }
 
 /// 响应 errors 中只要出现 scope 不足就映射为 typed error
@@ -161,7 +177,7 @@ fn projects_of(node: &Value, owner_type: &str) -> Option<Vec<ProjectV2Info>> {
 }
 
 /// 列出某 owner 的 Projects V2。owner 为空 = 当前登录用户（viewer）；
-/// ownerType 给 "user"/"org" 时走单一路径，否则两条路径都查、取有数据的一侧
+/// ownerType 给 "user"/"org" 时走单一路径，否则两条路径都查：user 侧列表非空用 user，否则看 org
 #[tauri::command]
 pub async fn list_projects_v2(
     state: State<'_, AppState>,
@@ -169,6 +185,7 @@ pub async fn list_projects_v2(
     owner_type: Option<String>,
 ) -> Result<Vec<ProjectV2Info>, String> {
     let token = ensure_token(&state)?;
+    check_known_scope(&state)?;
     let owner = owner.unwrap_or_default();
     let owner_type = owner_type.unwrap_or_default();
 
@@ -199,7 +216,8 @@ pub async fn list_projects_v2(
         _ => {}
     }
 
-    // 未指定类型：user / organization 两条路径合并查询，取有数据的一侧。
+    // 未指定类型：user / organization 两条路径合并查询。user 侧列表非空用 user，
+    // 否则看 org（同名 user/org 且 project 都在 org 的场景）；org 节点存在即返回（哪怕空列表）。
     // 注意：另一侧可能因 org 级 PAT 限制报错，只要有一侧出数据就不算失败。
     let q = format!(
         "query($login:String!){{{} {}}}",
@@ -207,14 +225,17 @@ pub async fn list_projects_v2(
         path("organization")
     );
     let v = gql(&state.http, &token, &q, json!({"login": owner})).await?;
-    if let Some(list) = projects_of(&v["data"]["user"], "user") {
-        return Ok(list);
+    let user = projects_of(&v["data"]["user"], "user");
+    let org = projects_of(&v["data"]["organization"], "org");
+    match (user, org) {
+        (Some(u), _) if !u.is_empty() => Ok(u),
+        (_, Some(o)) => Ok(o),
+        (Some(u), None) => Ok(u), // user 节点存在但 0 个 project、org 不存在
+        (None, None) => {
+            check_scope_errors(&v)?;
+            Err(format!("未找到 owner {owner} 或无权访问: {}", errors_text(&v)))
+        }
     }
-    if let Some(list) = projects_of(&v["data"]["organization"], "org") {
-        return Ok(list);
-    }
-    check_scope_errors(&v)?;
-    Err(format!("未找到 owner {owner} 或无权访问: {}", errors_text(&v)))
 }
 
 fn parse_fields(nodes: &[Value]) -> Vec<ProjectV2Field> {
@@ -260,7 +281,8 @@ fn parse_items(nodes: &[Value]) -> Vec<ProjectV2Item> {
         .collect()
 }
 
-const ITEM_NODE_FIELDS: &str = r#"
+/// item 的 content 部分；status 部分单独拼（字段名走变量注入，见 items_query）
+const ITEM_CONTENT_FIELDS: &str = r#"
 id updatedAt
 content{
   __typename
@@ -268,11 +290,38 @@ content{
   ... on PullRequest{ number title state url repository{ nameWithOwner } }
   ... on DraftIssue{ title }
 }
-status: fieldValueByName(name:"Status"){
+"#;
+
+const STATUS_SELECTION: &str = r#"
+status: fieldValueByName(name:$statusField){
   __typename
   ... on ProjectV2ItemFieldSingleSelectValue{ name optionId }
 }
 "#;
+
+/// Status 单选字段可被用户重命名：优先名为 "Status" 的 SINGLE_SELECT，否则取第一个 SINGLE_SELECT
+fn status_field_name(fields: &[ProjectV2Field]) -> Option<String> {
+    fields
+        .iter()
+        .find(|f| f.data_type == "SINGLE_SELECT" && f.name == "Status")
+        .or_else(|| fields.iter().find(|f| f.data_type == "SINGLE_SELECT"))
+        .map(|f| f.name.clone())
+}
+
+/// items 查询（所有分页共用）；with_status 时通过 $statusField 变量指定单选字段名，避免字符串拼接注入
+fn items_query(with_status: bool) -> String {
+    let mut q = String::from("query($id:ID!,$cursor:String");
+    if with_status {
+        q.push_str(",$statusField:String!");
+    }
+    q.push_str("){node(id:$id){... on ProjectV2{items(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{");
+    q.push_str(ITEM_CONTENT_FIELDS);
+    if with_status {
+        q.push_str(STATUS_SELECTION);
+    }
+    q.push_str("}}}}}");
+    q
+}
 
 /// 读取单个 project 的字段（含 Status 单选）与 items。内存缓存 5 分钟，refresh=true 强制刷新
 #[tauri::command]
@@ -282,6 +331,7 @@ pub async fn get_project_v2(
     refresh: Option<bool>,
 ) -> Result<ProjectV2Board, String> {
     let token = ensure_token(&state)?;
+    check_known_scope(&state)?;
     let key = format!("{}:{project_id}", token_fp(&token));
     if refresh != Some(true) {
         if let Some(c) = state.projects_v2_cache.lock().unwrap().as_ref() {
@@ -291,9 +341,9 @@ pub async fn get_project_v2(
         }
     }
 
-    // 第一页：字段 + 首批 items
-    let q1 = format!(
-        r#"query($id:ID!,$cursor:String){{node(id:$id){{... on ProjectV2{{
+    // 第一次：project 元信息 + 字段定义（小查询，用于定位 Status 单选字段的实际名字——该字段可被重命名）
+    let qf = format!(
+        r#"query($id:ID!){{node(id:$id){{... on ProjectV2{{
   {PROJECT_NODE_FIELDS}
   owner{{__typename ...on User{{login}} ...on Organization{{login}}}}
   fields(first:50){{nodes{{
@@ -301,10 +351,9 @@ pub async fn get_project_v2(
     ... on ProjectV2FieldCommon{{id name dataType}}
     ... on ProjectV2SingleSelectField{{options{{id name}}}}
   }}}}
-  items(first:100,after:$cursor){{totalCount pageInfo{{hasNextPage endCursor}} nodes{{{ITEM_NODE_FIELDS}}}}}
 }}}}}}"#
     );
-    let v = gql(&state.http, &token, &q1, json!({"id": project_id, "cursor": Value::Null})).await?;
+    let v = gql(&state.http, &token, &qf, json!({"id": project_id})).await?;
     check_scope_errors(&v)?;
     let node = &v["data"]["node"];
     if node.is_null() {
@@ -316,34 +365,45 @@ pub async fn get_project_v2(
     };
     let project = parse_project(node, node["owner"]["login"].as_str().unwrap_or(""), owner_type);
     let fields = parse_fields(&node["fields"]["nodes"].as_array().cloned().unwrap_or_default());
-    let mut items = parse_items(&node["items"]["nodes"].as_array().cloned().unwrap_or_default());
+    let status_field = status_field_name(&fields);
 
-    // 后续页只拉 items，减少 cost
-    let mut page_info = node["items"]["pageInfo"].clone();
-    if page_info["hasNextPage"].as_bool() == Some(true) {
-        let qn = [
-            "query($id:ID!,$cursor:String){node(id:$id){... on ProjectV2{items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{",
-            ITEM_NODE_FIELDS,
-            "}}}}}",
-        ]
-        .concat();
-        for _ in 1..MAX_ITEM_PAGES {
-            let cursor = page_info["endCursor"].as_str().map(|s| s.to_string());
-            let v = gql(&state.http, &token, &qn, json!({"id": project_id, "cursor": cursor})).await?;
-            check_scope_errors(&v)?;
-            let conn = &v["data"]["node"]["items"];
-            if conn.is_null() {
-                break;
-            }
-            items.extend(parse_items(&conn["nodes"].as_array().cloned().unwrap_or_default()));
-            page_info = conn["pageInfo"].clone();
-            if page_info["hasNextPage"].as_bool() != Some(true) {
-                break;
-            }
+    // items：所有页共用一个 query（带可选 $statusField）
+    let qi = items_query(status_field.is_some());
+    let mk_vars = |cursor: Option<String>| {
+        let mut vars = json!({"id": project_id, "cursor": cursor});
+        if let Some(sf) = &status_field {
+            vars["statusField"] = json!(sf);
         }
+        vars
+    };
+    let v = gql(&state.http, &token, &qi, mk_vars(None)).await?;
+    check_scope_errors(&v)?;
+    let conn = &v["data"]["node"]["items"];
+    if conn.is_null() {
+        return Err(format!("无法读取 project items: {}", errors_text(&v)));
     }
+    let total_count = conn["totalCount"].as_u64().unwrap_or(0);
+    let mut items = parse_items(&conn["nodes"].as_array().cloned().unwrap_or_default());
+    let mut page_info = conn["pageInfo"].clone();
 
-    let board = ProjectV2Board { project, fields, items };
+    // 后续页（总共最多 MAX_ITEM_PAGES 页）
+    for _ in 1..MAX_ITEM_PAGES {
+        if page_info["hasNextPage"].as_bool() != Some(true) {
+            break;
+        }
+        let cursor = page_info["endCursor"].as_str().map(|s| s.to_string());
+        let v = gql(&state.http, &token, &qi, mk_vars(cursor)).await?;
+        check_scope_errors(&v)?;
+        let conn = &v["data"]["node"]["items"];
+        if conn.is_null() {
+            break;
+        }
+        items.extend(parse_items(&conn["nodes"].as_array().cloned().unwrap_or_default()));
+        page_info = conn["pageInfo"].clone();
+    }
+    let truncated = total_count > items.len() as u64;
+
+    let board = ProjectV2Board { project, fields, items, total_count, truncated };
     *state.projects_v2_cache.lock().unwrap() = Some(BoardCache {
         key,
         board: board.clone(),

@@ -35,6 +35,10 @@ export const listMyRepos = () => invoke<RepoInfo[]>("list_my_repos");
 export const ERR_MISSING_PROJECT_SCOPE = "MISSING_PROJECT_SCOPE:";
 export const isMissingProjectScope = (e: unknown) =>
 	typeof e === "string" && e.startsWith(ERR_MISSING_PROJECT_SCOPE);
+/** 后端 typed error 前缀：token 失效/被吊销（HTTP 401 Bad credentials），引导重新登录 */
+export const ERR_BAD_CREDENTIALS = "BAD_CREDENTIALS:";
+export const isBadCredentials = (e: unknown) =>
+	typeof e === "string" && e.startsWith(ERR_BAD_CREDENTIALS);
 /** owner 为空 = 当前登录用户；ownerType 不给时后端自动尝试 user / org 两条路径 */
 export const listProjectsV2 = (
 	owner?: string | null,

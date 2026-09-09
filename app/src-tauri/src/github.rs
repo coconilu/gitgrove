@@ -199,13 +199,18 @@ async fn fetch_viewer(http: &Http, token: &str, source: &str) -> Result<AuthStat
 #[tauri::command]
 pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, String> {
     let record = |me: &AuthState2| *state.has_project_scope.lock().unwrap() = me.has_project_scope;
+    // 失败 / 未登录路径统一清空，避免残留旧 token 的 scope 状态
+    let out = |state: &AppState| {
+        *state.has_project_scope.lock().unwrap() = None;
+        logged_out()
+    };
     // 内存 / keyring
     if let Ok(t) = ensure_token(&state) {
         if let Ok(me) = fetch_viewer(&state.http, &t, "keyring").await {
             record(&me);
             return Ok(me);
         }
-        return Ok(logged_out());
+        return Ok(out(&state));
     }
     // gh CLI 兜底
     if let Some(t) = try_gh_cli(&state) {
@@ -213,9 +218,9 @@ pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, Strin
             record(&me);
             return Ok(me);
         }
-        return Ok(logged_out());
+        return Ok(out(&state));
     }
-    Ok(logged_out())
+    Ok(out(&state))
 }
 
 #[tauri::command]

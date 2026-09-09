@@ -90,6 +90,10 @@ export interface ProjectV2Board {
 	project: ProjectV2Info;
 	fields: ProjectV2Field[];
 	items: ProjectV2Item[];
+	/** project 内 items 总数（GraphQL totalCount） */
+	totalCount: number;
+	/** 达到后端翻页上限（500 条）未拉全时为 true */
+	truncated: boolean;
 }
 
 export interface RepoInfo {
