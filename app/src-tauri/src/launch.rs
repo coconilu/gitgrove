@@ -409,7 +409,12 @@ fn launch_command(app: &AppSpec, executable: &Path, target: &Path) -> Command {
     }
     let mut command = git::new_cmd(&executable.to_string_lossy());
     if app.kind == "editor" {
-        command.arg(target);
+        // ZCode 不是 VS Code 系编辑器：位置参数会被忽略，必须显式 --open-workspace
+        if app.id == "zcode" {
+            command.arg("--open-workspace").arg(target);
+        } else {
+            command.arg(target);
+        }
     } else {
         // 路径作为工作目录或独立参数传递，绝不拼进 shell 命令。
         command.current_dir(target);
@@ -612,7 +617,12 @@ mod tests {
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect();
             if app.kind == "editor" {
-                assert_eq!(args, vec![target.to_string_lossy()]);
+                let expected: Vec<String> = if app.id == "zcode" {
+                    vec!["--open-workspace".into(), target.to_string_lossy().into_owned()]
+                } else {
+                    vec![target.to_string_lossy().into_owned()]
+                };
+                assert_eq!(args, expected, "{} 的启动参数不符合预期", app.id);
             } else {
                 assert_eq!(command.get_current_dir(), Some(target));
                 assert!(!args
@@ -620,6 +630,23 @@ mod tests {
                     .any(|arg| arg.contains("%PATH%") || arg == "/c" || arg == "-Command"));
             }
         }
+    }
+
+    #[test]
+    fn zcode_uses_explicit_open_workspace_flag() {
+        // ZCode 实测：只解析 --open-workspace <dir>（app.asar 中
+        // extractOpenWorkspacePathFromArgs），位置参数会被静默忽略。
+        let target = Path::new(r"C:\proj\demo");
+        let zcode = catalog().into_iter().find(|a| a.id == "zcode").unwrap();
+        let command = launch_command(&zcode, Path::new(zcode.executable), target);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec!["--open-workspace".to_string(), target.to_string_lossy().into_owned()]
+        );
     }
 
     #[test]
