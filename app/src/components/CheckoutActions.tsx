@@ -1,4 +1,5 @@
 import * as api from "../api";
+import { pullCheckout } from "../api-sync";
 import { CI_LABELS, worktreePath } from "../navigation";
 import { useStore } from "../store";
 import type { CheckoutInfo, LinkedWorkItem, Project } from "../types";
@@ -97,6 +98,15 @@ export function useCoOps(p: Project) {
 				toast(String(e));
 			}
 		},
+		pull: async (c: CheckoutInfo) => {
+			try {
+				await pullCheckout(c.path);
+				await refreshProjects();
+				toast("已拉取最新提交：" + c.branch);
+			} catch (e) {
+				toast(String(e));
+			}
+		},
 		createPr: (c: CheckoutInfo) =>
 			openDialog({
 				kind: "prompt",
@@ -137,6 +147,15 @@ export function CheckoutActions({ p, c }: { p: Project; c: CheckoutInfo }) {
 	const ops = useCoOps(p);
 	return (
 		<div className="checkout-actions">
+			{c.behind > 0 && (
+				<button
+					className="btn"
+					title="git pull --ff-only；分叉不能快进时会提示 git 报错"
+					onClick={() => ops.pull(c)}
+				>
+					拉取
+				</button>
+			)}
 			<OpenInMenu
 				key={c.path}
 				path={c.path}
