@@ -58,6 +58,8 @@ pub fn run() {
             pm::list_projects_v2,
             pm::get_project_v2,
             // PM（自研项目管理）
+            pm::pm_list_statuses,
+            pm::pm_update_statuses,
             pm::pm_list_items,
             pm::pm_create_item,
             pm::pm_update_item,

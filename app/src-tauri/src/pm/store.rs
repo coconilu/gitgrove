@@ -177,6 +177,55 @@ impl PmStore {
         Ok(defaults)
     }
 
+    /// 整体写回看板列（PUT 语义）：校验至少一列、id 非空且唯一；
+    /// 被删列上的 item 归到第一列（列管理删除列时任务不丢），排序键原样保留
+    pub fn update_statuses(&self, defs: &[StatusDef]) -> Result<Vec<StatusDef>, String> {
+        if defs.is_empty() {
+            return Err("至少需要一列看板列".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for d in defs {
+            if d.id.trim().is_empty() {
+                return Err("看板列 id 不能为空".into());
+            }
+            if !seen.insert(&d.id) {
+                return Err(format!("看板列 id 重复: {}", d.id));
+            }
+        }
+        let json = serde_json::to_string(defs).map_err(|e| e.to_string())?;
+        let tx = self.conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![STATUSES_KEY, json],
+        )
+        .map_err(|e| e.to_string())?;
+        // 孤儿 item 归位：status 不在新列集合中的活动 item 统一改到第一列
+        let valid: std::collections::HashSet<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+        let orphans: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT DISTINCT status FROM items WHERE deleted_at IS NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<String>, _>>()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|s| !valid.contains(s.as_str()))
+                .collect()
+        };
+        let now = now_ts();
+        for s in orphans {
+            tx.execute(
+                "UPDATE items SET status=?2, updated_at=?3 WHERE status=?1 AND deleted_at IS NULL",
+                params![s, defs[0].id, now],
+            )
+            .map_err(|e| format!("归位孤儿 item 失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(defs.to_vec())
+    }
+
     fn validate_status(&self, status: &str) -> Result<(), String> {
         if self.statuses()?.iter().any(|s| s.id == status) {
             Ok(())
@@ -809,6 +858,66 @@ mod tests {
         let item = store.get_active_item(&done_item.id).unwrap();
         assert_eq!(item.milestone_id, None);
         assert!(store.delete_milestone(&m.id).is_err());
+    }
+
+    #[test]
+    fn statuses_read_defaults_and_round_trip() {
+        let store = PmStore::open_memory();
+        let defaults = store.statuses().unwrap();
+        assert_eq!(
+            defaults.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["backlog", "todo", "doing", "done"]
+        );
+
+        let custom = vec![
+            StatusDef { id: "icebox".into(), name: "Icebox".into() },
+            StatusDef { id: "wip".into(), name: "进行中".into() },
+            StatusDef { id: "shipped".into(), name: "Shipped".into() },
+        ];
+        let written = store.update_statuses(&custom).unwrap();
+        assert_eq!(written, custom);
+        assert_eq!(store.statuses().unwrap(), custom);
+    }
+
+    #[test]
+    fn statuses_reject_invalid_input() {
+        let store = PmStore::open_memory();
+        // 空数组
+        assert!(store.update_statuses(&[]).is_err());
+        // 重复 id
+        let dup = vec![
+            StatusDef { id: "a".into(), name: "A".into() },
+            StatusDef { id: "a".into(), name: "A2".into() },
+        ];
+        assert!(store.update_statuses(&dup).is_err());
+        // 空 id
+        let blank = vec![StatusDef { id: " ".into(), name: "X".into() }];
+        assert!(store.update_statuses(&blank).is_err());
+        // 拒绝后原列定义不变
+        assert_eq!(store.statuses().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn statuses_orphan_items_move_to_first_column() {
+        let store = PmStore::open_memory();
+        let kept = store.create_item(&new_item("留", Some("todo"))).unwrap();
+        let orphan = store.create_item(&new_item("孤", Some("done"))).unwrap();
+
+        // 删除 done 列并改名 backlog → 孤儿归到第一列（icebox）
+        store
+            .update_statuses(&[
+                StatusDef { id: "icebox".into(), name: "Icebox".into() },
+                StatusDef { id: "todo".into(), name: "Todo".into() },
+                StatusDef { id: "doing".into(), name: "Doing".into() },
+            ])
+            .unwrap();
+
+        let orphan_after = store.get_active_item(&orphan.id).unwrap();
+        assert_eq!(orphan_after.status, "icebox");
+        let kept_after = store.get_active_item(&kept.id).unwrap();
+        assert_eq!(kept_after.status, "todo"); // 未删列上的 item 不动
+        // 归位后的 item 可被新列校验接受
+        assert!(store.move_item(&orphan.id, "todo", None).is_ok());
     }
 
     #[test]

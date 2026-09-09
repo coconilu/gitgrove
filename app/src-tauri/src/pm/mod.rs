@@ -4,11 +4,27 @@ pub mod model;
 mod order;
 pub mod store;
 
-pub use model::{ImportResult, Item, ItemFilter, Milestone, MilestoneWithStats, NewItem, PmExport};
+pub use model::{
+    ImportResult, Item, ItemFilter, Milestone, MilestoneWithStats, NewItem, PmExport, StatusDef,
+};
 
 use tauri::State;
 
 use crate::AppState;
+
+#[tauri::command]
+pub fn pm_list_statuses(state: State<'_, AppState>) -> Result<Vec<StatusDef>, String> {
+    state.pm.lock().unwrap().statuses()
+}
+
+/// 整体写回看板列（PUT 语义）：至少一列、id 唯一；被删列上的 item 归到第一列（任务不丢）
+#[tauri::command]
+pub fn pm_update_statuses(
+    state: State<'_, AppState>,
+    statuses: Vec<StatusDef>,
+) -> Result<Vec<StatusDef>, String> {
+    state.pm.lock().unwrap().update_statuses(&statuses)
+}
 
 #[tauri::command]
 pub fn pm_list_items(
