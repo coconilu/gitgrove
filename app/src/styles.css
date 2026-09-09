@@ -116,13 +116,8 @@ button {
 	font-size: 12px;
 	color: var(--muted);
 }
-.group-by select {
-	background: var(--panel);
-	color: var(--text);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 2px 6px;
-	font-size: 12px;
+.group-by .ui-select-trigger {
+	max-width: 150px;
 }
 .rows {
 	flex: 1;
@@ -528,8 +523,11 @@ tr:hover td {
 	border-radius: 6px;
 	padding: 3px 10px;
 	font-size: 12px;
+	transition:
+		background-color 0.12s,
+		border-color 0.12s;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
 	border-color: var(--muted);
 }
 .btn.primary {
@@ -537,7 +535,7 @@ tr:hover td {
 	border-color: #2ea043;
 	color: #fff;
 }
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
 	background: #2ea043;
 }
 .btn.sm {
@@ -545,6 +543,10 @@ tr:hover td {
 }
 .btn.danger {
 	color: var(--red);
+}
+.btn.danger:hover:not(:disabled) {
+	border-color: var(--red);
+	background: rgba(248, 81, 73, 0.1);
 }
 
 /* Worktrees & Branches 双栏 */
@@ -725,10 +727,18 @@ pre.code {
 	padding: 7px 10px;
 	color: var(--text);
 	font-size: 13px;
+	transition: border-color 0.12s;
+}
+.input:hover:not(:disabled):not(:focus) {
+	border-color: var(--muted);
 }
 .input:focus {
 	outline: none;
 	border-color: var(--accent);
+}
+.input:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
 }
 .avatar {
 	width: 36px;
@@ -964,10 +974,6 @@ button:disabled {
 .group-by {
 	padding-bottom: 12px;
 	justify-content: space-between;
-}
-.group-by select {
-	max-width: 150px;
-	padding: 4px 6px;
 }
 .rows {
 	padding: 0 8px 12px;
@@ -1368,6 +1374,196 @@ button:disabled {
 .more-popover button:hover {
 	background: var(--border);
 }
+
+/* ===== Radix UI 基础组件（app/src/components/ui/） ===== */
+/* Select */
+.ui-select-trigger {
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	background: var(--panel);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 4px 8px;
+	font-size: 12px;
+	min-width: 0;
+	transition: border-color 0.12s;
+}
+.ui-select-trigger:hover:not(:disabled) {
+	border-color: var(--muted);
+}
+.ui-select-trigger[data-placeholder] {
+	color: var(--muted);
+}
+.ui-select-icon {
+	display: inline-flex;
+	flex: none;
+	color: var(--muted);
+	transition: transform 120ms ease;
+}
+.ui-select-trigger[data-state="open"] .ui-select-icon {
+	transform: rotate(180deg);
+}
+.ui-select-content {
+	z-index: 80;
+	min-width: var(--radix-select-trigger-width);
+	max-height: var(--radix-select-content-available-height);
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 4px;
+	box-shadow: 0 8px 24px #0008;
+}
+.ui-select-content[data-state="open"] {
+	animation: ui-pop-in 120ms ease-out;
+}
+.ui-select-viewport {
+	overflow-y: auto;
+}
+.ui-select-item {
+	position: relative;
+	display: flex;
+	align-items: center;
+	padding: 6px 8px 6px 26px;
+	border-radius: 4px;
+	font-size: 12px;
+	color: var(--text);
+	cursor: default;
+	user-select: none;
+	outline: none;
+}
+.ui-select-item[data-highlighted] {
+	background: var(--accent-soft);
+}
+.ui-select-item[data-disabled] {
+	opacity: 0.5;
+}
+.ui-select-check {
+	position: absolute;
+	left: 6px;
+	display: inline-flex;
+}
+
+/* DropdownMenu */
+.ui-menu-trigger {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 4px;
+	color: var(--muted);
+}
+.ui-menu-trigger:hover,
+.ui-menu-trigger[data-state="open"] {
+	color: var(--text);
+	background: var(--border);
+}
+.project-menu-trigger {
+	width: 26px;
+	min-height: 28px;
+	font-size: 18px;
+}
+.ui-menu-content {
+	z-index: 80;
+	min-width: 180px;
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 5px;
+	box-shadow: 0 8px 24px #0008;
+}
+.ui-menu-content[data-state="open"] {
+	animation: ui-pop-in 120ms ease-out;
+}
+.ui-menu-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	padding: 8px 10px;
+	border-radius: 4px;
+	font-size: 12px;
+	color: var(--text);
+	cursor: pointer;
+	outline: none;
+}
+.ui-menu-item[data-highlighted] {
+	background: var(--border);
+}
+.ui-menu-item[data-disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.ui-menu-separator {
+	height: 1px;
+	margin: 4px 6px;
+	background: var(--border-soft);
+}
+
+/* Dialog（Radix）：遮罩 + 居中内容 + 进出场动画 */
+.ui-dialog-overlay {
+	position: fixed;
+	inset: 0;
+	background: #010409bb;
+	z-index: 60;
+}
+.ui-dialog-overlay[data-state="open"] {
+	animation: ui-fade-in 140ms ease-out;
+}
+.ui-dialog-overlay[data-state="closed"] {
+	animation: ui-fade-out 120ms ease-in;
+}
+.ui-dialog-content {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	margin: 0;
+	z-index: 61;
+}
+.ui-dialog-content[data-state="open"] {
+	animation: ui-dialog-in 160ms ease-out;
+}
+.ui-dialog-content[data-state="closed"] {
+	animation: ui-dialog-out 120ms ease-in;
+}
+@keyframes ui-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+@keyframes ui-fade-out {
+	to {
+		opacity: 0;
+	}
+}
+@keyframes ui-pop-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+@keyframes ui-dialog-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, -48%) scale(0.97);
+	}
+	to {
+		opacity: 1;
+		transform: translate(-50%, -50%) scale(1);
+	}
+}
+@keyframes ui-dialog-out {
+	from {
+		opacity: 1;
+		transform: translate(-50%, -50%) scale(1);
+	}
+	to {
+		opacity: 0;
+		transform: translate(-50%, -48%) scale(0.97);
+	}
+}
+
 .open-in-popover {
 	width: 260px;
 }
@@ -1708,6 +1904,7 @@ button:disabled {
 	*::after {
 		scroll-behavior: auto;
 		transition: none;
+		animation: none;
 	}
 }
 .settings-dialog {

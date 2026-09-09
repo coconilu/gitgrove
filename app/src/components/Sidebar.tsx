@@ -7,6 +7,15 @@ import type { CheckoutInfo, Project } from "../types";
 import { addLocalFolder, LinkBadge } from "./CheckoutActions";
 import IconButton from "./IconButton";
 import { ResourceState } from "./ResourceState";
+import { Button } from "./ui/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Input } from "./ui/input";
+import { Select } from "./ui/select";
 
 export default function Sidebar() {
 	const s = useStore();
@@ -123,24 +132,25 @@ export default function Sidebar() {
 				</button>
 			</nav>
 			<div className="sidebar-search">
-				<input
-					className="input"
+				<Input
 					aria-label="搜索本地项目或分支"
 					placeholder="搜索项目或分支"
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 				/>
 			</div>
-			<label className="group-by">
+			<div className="group-by">
 				<span>分组</span>
-				<select
+				<Select
+					aria-label="分组方式"
 					value={s.groupBy}
-					onChange={(e) => s.setGroupBy(e.target.value as "repo" | "status")}
-				>
-					<option value="repo">按项目</option>
-					<option value="status">按任务关联</option>
-				</select>
-			</label>
+					onValueChange={(v) => s.setGroupBy(v as "repo" | "status")}
+					options={[
+						{ value: "repo", label: "按项目" },
+						{ value: "status", label: "按任务关联" },
+					]}
+				/>
+			</div>
 			<div className="rows">
 				{s.projectsError && (
 					<ResourceState
@@ -200,19 +210,19 @@ export default function Sidebar() {
 										<span className="project-name">{p.name}</span>
 										<span className="count-pill">{p.checkouts.length}</span>
 									</button>
-									<details className="more-menu project-menu">
-										<summary aria-label={"项目操作：" + p.name}>⋯</summary>
-										<div
-											className="more-popover"
-											onClick={(e) =>
-												e.currentTarget
-													.closest("details")
-													?.removeAttribute("open")
-											}
+									<DropdownMenu>
+										<DropdownMenuTrigger
+											className="project-menu-trigger"
+											aria-label={"项目操作：" + p.name}
 										>
-											<button onClick={() => remove(p)}>移除项目…</button>
-										</div>
-									</details>
+											⋯
+										</DropdownMenuTrigger>
+										<DropdownMenuContent>
+											<DropdownMenuItem onSelect={() => remove(p)}>
+												移除项目…
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
 								</div>
 								{(s.expanded[p.id] ?? true) &&
 									p.checkouts.map((c) => checkout(p, c))}
@@ -228,12 +238,8 @@ export default function Sidebar() {
 						))}
 			</div>
 			<div className="side-foot">
-				<button className="btn" onClick={addLocalFolder}>
-					添加本地项目
-				</button>
-				<button className="btn" onClick={() => s.setView("github")}>
-					克隆仓库
-				</button>
+				<Button onClick={addLocalFolder}>添加本地项目</Button>
+				<Button onClick={() => s.setView("github")}>克隆仓库</Button>
 			</div>
 		</aside>
 	);
