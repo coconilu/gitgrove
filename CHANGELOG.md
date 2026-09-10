@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.2.1（2026-09-10）
+
+- 无提交记录
+
+## v1.2.0（2026-09-09）
+
+- Merge pull request #46 from coconilu/chore/tower-merge-m11
+- Merge branch 'feat/projects-v2-stub-list-get-projects-v2'
+- Merge pull request #45 from coconilu/chore/tower-merge-m8-m10
+- chore(pm): 删除 projects_v2 临时 stub（M8 前端已摘除调用）
+- Merge branch 'feat/pm-commands-pm-list-statuses-pm-update-s'
+- Merge branch 'feat/pm-p0'
+- fix(pm): 提交 ProjectsPanel.tsx 删除；create/move 后刷新里程碑统计；清理 list-tools 死规则
+- feat(pm): 新增 pm_list_statuses / pm_update_statuses 看板列管理 command
+- feat(pm): 自研项目管理 P0 前端 — 看板 + 里程碑视图，退役 Projects v2 面板
+- Merge pull request #44 from coconilu/chore/tower-merge-m9
+- Merge branch 'feat/pull-42'
+- Merge pull request #43 from coconilu/chore/tower-merge-m7
+- fix: 分支同步状态刷新前先 fetch + 新增 ff-only 拉取入口 (#42)
+- Merge branch 'feat/pm-sqlite-store-tauri-commands-p0'
+- fix(pm): 加回 projects_v2 命令临时 stub，避免 M8 前端摘除前运行时回归
+- feat(pm): 自研项目管理 P0 后端 — SQLite store + 模型 + Tauri commands
+- Merge pull request #41 from coconilu/docs/pm-self-hosted-plan
+- docs: 自研项目管理方案 + 看板/里程碑视图草稿 (#29 #40)
+
 ## v1.1.0（2026-09-09）
 
 - Merge pull request #36 from coconilu/chore/tower-merge-35
