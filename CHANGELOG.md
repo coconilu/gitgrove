@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.1（2026-09-10）
+
+- 无提交记录
+
 ## v1.2.0（2026-09-09）
 
 - Merge pull request #46 from coconilu/chore/tower-merge-m11
