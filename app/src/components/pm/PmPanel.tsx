@@ -25,12 +25,12 @@ import {
 	EMPTY_FILTER,
 	filterItems,
 	loadPmLocalData,
+	type PmSyncBanner,
 	PRIORITIES,
 	PRIORITY_LABELS,
 	pmSyncWithTimeout,
 	repoName,
 	syncBannerFromOutcome,
-	type PmSyncBanner,
 } from "./model";
 
 export type PmView = "board" | "milestones";
