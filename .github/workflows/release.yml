@@ -28,6 +28,7 @@ jobs:
       contents: write
       pull-requests: write
       actions: write
+      checks: read
     outputs:
       sha: ${{ steps.prepare.outputs.sha }}
     steps:
@@ -98,8 +99,9 @@ jobs:
           ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
-      # 与 ci.yml 共用 gitgrove- 前缀，Release workflow 名区分来源；
-      # release 产物（target/release）依赖已编译缓存，首次冷、后续热
+      # 缓存命名空间 gitgrove-Release-* 与 ci.yml 的 gitgrove-CI-* 互不相通：
+      # check 只产出 rmeta，暖不了这里的完整 release 编译，首次发版冷、
+      # 同 lockfile 的重试与后续发版热
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
