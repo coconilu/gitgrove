@@ -431,9 +431,21 @@ fn server_command(executable: &Path, home: &Path, port: u16) -> Command {
 }
 
 struct StartedServer(Option<Child>);
+impl StartedServer {
+    /// 仅当子进程确认仍存活时才允许按 PID 清理进程树：启动即退（已回收）或
+    /// 状态未知时 PID 可能已被 OS 复用，taskkill 会误杀无关进程树。
+    fn tree_cleanup_allowed(child: &mut Child) -> bool {
+        matches!(child.try_wait(), Ok(None))
+    }
+}
 impl Drop for StartedServer {
     fn drop(&mut self) {
         let Some(child) = &mut self.0 else { return };
+        if !Self::tree_cleanup_allowed(child) {
+            // 已退出：无树可清，回收退出状态即可。
+            let _ = child.wait();
+            return;
+        }
         // dsh 经 .cmd shim / npx 启动：child 是 cmd.exe 包装层，仅 kill 会把
         // npm/node 孙进程留成孤儿继续占用端口。Windows 先用 taskkill /T /F
         // 清掉整棵进程树——树必须在 shim 仍存活时枚举，故先于 kill() 执行；

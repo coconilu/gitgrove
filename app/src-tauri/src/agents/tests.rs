@@ -730,6 +730,75 @@ async fn dsh_first_live_port_skips_dead_and_honors_candidate_order() {
 }
 
 #[tokio::test]
+async fn started_server_skips_tree_cleanup_for_already_exited_child() {
+    // 早退路径：子进程已退出时 PID 可能被 OS 复用，绝不允许按 PID taskkill
+    // （guard 必须为 false）；对照组：存活子进程允许清树（超时路径依赖它）。
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(&stub, "@echo off\r\nexit /b 0\r\n").unwrap();
+    let mut exited = git::new_cmd(&stub.to_string_lossy())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if exited.try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        exited.try_wait().unwrap().is_some(),
+        "stub must have exited"
+    );
+    assert!(!StartedServer::tree_cleanup_allowed(&mut exited));
+    let _ = exited.kill();
+    let _ = exited.wait();
+
+    let mut live = git::new_cmd("cmd")
+        .args(["/C", "ping", "-n", "2", "127.0.0.1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(StartedServer::tree_cleanup_allowed(&mut live));
+    let _ = live.kill();
+    let _ = live.wait();
+}
+
+#[tokio::test]
+async fn started_server_drop_kills_the_whole_server_process_tree() {
+    // 运行中 server 的 Drop 必须连 powershell 这类孙进程一起清掉（r1 P2）：
+    // 桩 cmd 等待 powershell 子进程监听端口，drop 后端口必须变为不可达。
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(
+        &stub,
+        "@echo off\r\npowershell -NoProfile -NonInteractive -Command \"$l=\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%5);\
+         $l.Start();Start-Sleep -Seconds 30;$l.Stop()\"\r\n",
+    )
+    .unwrap();
+    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    drop(owned);
+    for _ in 0..20 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    panic!("the whole server process tree must die with StartedServer");
+}
+
+#[tokio::test]
 #[ignore = "Windows GUI acceptance: opens an external app, requires explicit target and tool"]
 async fn desktop_open() {
     let path = std::env::var("GITGROVE_AGENT_TARGET")
