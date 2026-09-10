@@ -55,6 +55,19 @@ export default function PmPanel({ p }: { p: Project }) {
 
 	const load = useCallback(async () => {
 		setError("");
+		// 先同步 GitHub 再加载本地数据：无 GitHub provider 的项目跳过；
+		// 同步失败（网络/凭据）只 toast，不阻断本地加载
+		if (p.providerIdentity?.provider === "github") {
+			try {
+				const r = await api.pmSyncGithub(p.id);
+				if (r.created + r.updated + r.moved > 0)
+					toast(
+						`GitHub 同步：新增 ${r.created} · 更新 ${r.updated} · 迁移 ${r.moved}`,
+					);
+			} catch (e) {
+				toast("GitHub 同步失败：" + String(e));
+			}
+		}
 		try {
 			const [items, milestones] = await Promise.all([
 				api.pmListItems(),
@@ -70,7 +83,7 @@ export default function PmPanel({ p }: { p: Project }) {
 		} catch {
 			// 后端 pm_list_statuses 未就绪时回退默认四列
 		}
-	}, []);
+	}, [p.id, p.providerIdentity, toast]);
 	useEffect(() => {
 		void load();
 	}, [load]);
@@ -117,6 +130,7 @@ export default function PmPanel({ p }: { p: Project }) {
 		toStatus: string,
 		beforeItemId: string | null,
 	) => {
+		const prev = (items ?? []).find((i) => i.id === itemId);
 		setItems((list) => {
 			const current = (list ?? []).filter((i) => i.id !== itemId);
 			const active = (list ?? []).find((i) => i.id === itemId);
@@ -135,7 +149,12 @@ export default function PmPanel({ p }: { p: Project }) {
 			return [...current];
 		});
 		try {
-			const updated = await api.pmMoveItem(itemId, toStatus, beforeItemId);
+			let updated = await api.pmMoveItem(itemId, toStatus, beforeItemId);
+			// 拖动 GitHub 卡片换列 → 置 manualLock（人工接管列位置，同步不再自动迁移）；
+			// PUT 全字段语义：回传 move 返回的完整 item，order/createdAt/githubRef 服务端保留
+			if (prev?.githubRef && !prev.manualLock && prev.status !== toStatus) {
+				updated = await api.pmUpdateItem({ ...updated, manualLock: true });
+			}
 			setItems((list) =>
 				(list ?? []).map((i) => (i.id === updated.id ? updated : i)),
 			);

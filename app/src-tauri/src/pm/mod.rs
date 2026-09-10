@@ -3,10 +3,12 @@
 pub mod model;
 mod order;
 pub mod store;
+pub mod sync;
 
 pub use model::{
     ImportResult, Item, ItemFilter, Milestone, MilestoneWithStats, NewItem, PmExport, StatusDef,
 };
+pub use sync::SyncResult;
 
 use tauri::State;
 
@@ -109,4 +111,54 @@ pub fn pm_export_json(state: State<'_, AppState>) -> Result<PmExport, String> {
 #[tauri::command]
 pub fn pm_import_json(state: State<'_, AppState>, data: PmExport) -> Result<ImportResult, String> {
     state.pm.lock().unwrap().import(&data)
+}
+
+/// GitHub issue → 看板同步（手动触发；只读 GitHub，不回写）：
+/// 按 project_id 找 provider 仓库，拉 open + 近期 closed issues 与 open PR，
+/// upsert 卡片（新卡落 todo）并按 LinkedWorkItem / PR 引用信号自动迁移列。
+#[tauri::command]
+pub async fn pm_sync_github(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<SyncResult, String> {
+    let st = crate::store::load(); // projects.json（注意与 pm::store 区分）
+    let sp = st
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("项目不存在: {project_id}"))?;
+    let identity = sp
+        .provider_identity
+        .as_ref()
+        .ok_or_else(|| crate::projects::ERR_NO_GITHUB.to_string())?;
+    if identity.provider != "github" {
+        return Err(format!("暂不支持的服务商: {}", identity.provider));
+    }
+    let links: Vec<crate::store::LinkedWorkItem> = sp
+        .checkouts
+        .iter()
+        .filter_map(|c| c.linked_work_item.clone())
+        .collect();
+    let token = crate::github::ensure_token(&state)?;
+    // 网络阶段不持 pm 锁；issues 首页与 open PR 并行拉取
+    let (issues, prs) = tokio::join!(
+        crate::github::fetch_issues_for_sync(&state.http, &token, &identity.owner, &identity.repo),
+        crate::github::fetch_open_prs_for_sync(&state.http, &token, &identity.owner, &identity.repo),
+    );
+    let issues = issues?;
+    let prs = prs?;
+    let pr_texts: Vec<String> = prs
+        .iter()
+        .map(|p| format!("{}\n{}", p.title, p.body.as_deref().unwrap_or_default()))
+        .collect();
+    let signals = sync::build_signals(&links, &pr_texts);
+    let snapshots = sync::recent_issues(
+        issues.into_iter().map(sync::GithubIssueSnapshot::from).collect(),
+        store::now_ts(),
+    );
+    state
+        .pm
+        .lock()
+        .unwrap()
+        .sync_github(&identity.owner, &identity.repo, &snapshots, &signals)
 }

@@ -71,8 +71,10 @@ export interface PmItem {
 	dueDate: string | null;
 	/** 看板列内排序键（fractional indexing，字符串序） */
 	order: string;
-	/** P2 GitHub 互通预留位 */
+	/** P2 GitHub 互通引用，格式 `owner/repo#number`；同步引擎按此匹配 upsert */
 	githubRef: string | null;
+	/** 人工拖动过的 GitHub 同步卡片：同步时字段仍刷新，但列位置不再自动迁移 */
+	manualLock: boolean;
 	createdAt: number;
 	updatedAt: number;
 }
@@ -125,9 +127,17 @@ export interface PmExport {
 	milestones: PmMilestone[];
 }
 
+/** pm_import_json 返回的计数，供前端 toast */
 export interface PmImportResult {
 	items: number;
 	milestones: number;
+}
+
+/** pm_sync_github 返回的同步统计：新建/更新/自动迁移的卡片数 */
+export interface PmSyncResult {
+	created: number;
+	updated: number;
+	moved: number;
 }
 
 export interface RepoInfo {

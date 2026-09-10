@@ -18,6 +18,7 @@ import type {
 	PmMilestoneWithStats,
 	PmNewItem,
 	PmStatusDef,
+	PmSyncResult,
 	PrInfo,
 	Project,
 	RepoInfo,
@@ -71,6 +72,9 @@ export const pmImportJson = (data: PmExport) =>
 export const pmListStatuses = () => invoke<PmStatusDef[]>("pm_list_statuses");
 export const pmUpdateStatuses = (statuses: PmStatusDef[]) =>
 	invoke<PmStatusDef[]>("pm_update_statuses", { statuses });
+/** GitHub issue → 看板同步（手动触发）：upsert + 自动迁移；无 GitHub provider 的项目会报错 */
+export const pmSyncGithub = (projectId: string) =>
+	invoke<PmSyncResult>("pm_sync_github", { projectId });
 
 // ---- clone / 项目 ----
 export const checkCloneTarget = (repo: string) =>

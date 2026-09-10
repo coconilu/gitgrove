@@ -72,6 +72,31 @@ export function repoName(repoPath: string): string {
 	return clean.split("/").pop() || clean;
 }
 
+export interface GithubRef {
+	owner: string;
+	repo: string;
+	number: number;
+}
+
+/**
+ * 解析后端约定的 githubRef（`owner/repo#number`，见 sync.rs）。
+ * 格式不符返回 null（老数据 / 手填字段容错）。
+ */
+export function parseGithubRef(ref: string): GithubRef | null {
+	const m = /^([^/\s#]+)\/([^/\s#]+)#(\d+)$/.exec(ref);
+	if (!m) return null;
+	const number = Number(m[3]);
+	return { owner: m[1], repo: m[2], number };
+}
+
+/** githubRef 对应的 issue 页面链接；解析失败返回 null（不渲染徽标链接） */
+export function issueUrl(ref: string): string | null {
+	const parsed = parseGithubRef(ref);
+	return parsed
+		? `https://github.com/${parsed.owner}/${parsed.repo}/issues/${parsed.number}`
+		: null;
+}
+
 /** 本地日期 YYYY-MM-DD（不用 toISOString，避免时区偏移） */
 export function todayString(d: Date = new Date()): string {
 	const p = (n: number) => String(n).padStart(2, "0");
