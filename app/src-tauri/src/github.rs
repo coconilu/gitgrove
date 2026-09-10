@@ -68,7 +68,17 @@ impl Http {
     pub fn new() -> Http {
         let mk = |b: reqwest::ClientBuilder| {
             b.user_agent("gh-projects/0.1")
-                .timeout(std::time::Duration::from_secs(20))
+                // #61：HTTP 调用必须带上界。此前只有请求级 timeout（20s）而无
+                // connect_timeout——TCP 黑洞（直连 GitHub 被丢包、代理假活）要白等满
+                // 20s 才算失败再换代理侧重试，pm_sync_github 一次同步最坏可拖几十秒；
+                // 配合旧版 PmPanel「渲染前先 await 同步」，看板就永远停在「正在加载」。
+                // 现在前端已改为本地数据先渲染、同步后台化（不阻断），这里再把单请求
+                // 耗时兜死：connect 5s 让黑洞快速失败、尽早切到另一侧 client（send()
+                // 对 connect/timeout 失败会重试一次）；总时长 10s——reqwest 的 timeout
+                // 是请求级 deadline，覆盖 DNS/TLS/响应头/读 body，不是空闲超时。
+                // pm_sync_github 与 list_issues/list_prs 等全部 GitHub 调用共用本客户端。
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("failed to build http client")
         };

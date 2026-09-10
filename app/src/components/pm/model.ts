@@ -1,5 +1,10 @@
-// PM 纯逻辑：过滤、分组、里程碑聚合、截止日计算。不依赖 React，供 node --test 直接测。
-import type { PmItem, PmMilestoneWithStats, PmStatusDef } from "../../types";
+// PM 纯逻辑：过滤、分组、里程碑聚合、截止日计算、加载编排。不依赖 React，供 node --test 直接测。
+import type {
+	PmItem,
+	PmMilestoneWithStats,
+	PmStatusDef,
+	PmSyncResult,
+} from "../../types";
 
 /** 与后端 model.rs DEFAULT_STATUSES 对齐；pm_list_statuses 不可用时的回退 */
 export const DEFAULT_STATUSES: PmStatusDef[] = [
@@ -224,4 +229,62 @@ export function computeMove(
 	const over = items.find((i) => i.id === overId);
 	if (!over || over.id === active.id) return null;
 	return { toStatus: over.status, beforeItemId: over.id };
+}
+
+// ---- 数据加载编排（#61）：本地数据先渲染，GitHub 同步后台化 ----
+
+/** 前端同步超时兜底：后端网络有界（connect 5s / 请求 10s），此处再兜住 gh CLI、
+ * keyring 等无法覆盖的悬挂——超时后放弃等待当次同步，看板不受影响 */
+export const PM_SYNC_TIMEOUT_MS = 15_000;
+
+export interface PmLocalDeps {
+	listItems(): Promise<PmItem[]>;
+	listMilestones(): Promise<PmMilestoneWithStats[]>;
+}
+
+/** 本地看板数据一次加载（SQLite 毫秒级）。与 GitHub 同步完全解耦：同步悬挂、
+ * 失败都不影响本函数返回——这是「项目页签永远正在加载」(#61) 的修复核心 */
+export async function loadPmLocalData(
+	deps: PmLocalDeps,
+): Promise<{ items: PmItem[]; milestones: PmMilestoneWithStats[] }> {
+	const [items, milestones] = await Promise.all([
+		deps.listItems(),
+		deps.listMilestones(),
+	]);
+	return { items, milestones };
+}
+
+export interface PmSyncDeps {
+	syncGithub(projectId: string): Promise<PmSyncResult>;
+}
+
+export type PmSyncOutcome =
+	| { kind: "synced"; result: PmSyncResult }
+	| { kind: "failed"; error: string }
+	| { kind: "timeout" };
+
+/**
+ * 带超时兜底的 GitHub 同步：正常返回 synced/failed；同步悬挂（promise 永不
+ * settle）时 timeoutMs 后收敛为 timeout，调用方据此 toast 并放弃本次等待。
+ */
+export async function pmSyncWithTimeout(
+	projectId: string,
+	deps: PmSyncDeps,
+	timeoutMs: number = PM_SYNC_TIMEOUT_MS,
+): Promise<PmSyncOutcome> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			deps
+				.syncGithub(projectId)
+				.then((result): PmSyncOutcome => ({ kind: "synced", result })),
+			new Promise<PmSyncOutcome>((resolve) => {
+				timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+			}),
+		]);
+	} catch (e) {
+		return { kind: "failed", error: String(e) };
+	} finally {
+		clearTimeout(timer);
+	}
 }
