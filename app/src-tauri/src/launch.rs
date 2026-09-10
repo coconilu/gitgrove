@@ -663,40 +663,65 @@ mod tests {
         use windows_sys::Win32::System::Threading::{
             GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
         };
+        // 超时依据：本测试覆盖特殊字符工作目录走 CreateProcessW 的真实回归，必须留在
+        // 默认套件；但 CI Windows runner 上 powershell.exe 冷启动（.NET 装载、Defender
+        // 扫描新编译产物、cargo test 并行线程争用 CPU）偶发超过旧值 15 秒，曾打断过
+        // 发布。进程行为是确定性的，慢只是预算问题：单次预算放宽到 60 秒，超时整体
+        // 重跑一次；两次尝试的拉起与等待耗时、等待状态都打印出来便于诊断。
+        const ATTEMPTS: u32 = 2;
+        const TIMEOUT_MS: u32 = 60_000;
         let (_, executable) = selected_app("terminal", "powershell").unwrap();
         let scratch = Scratch::new();
         let target = scratch.0.join("项目 & O'Brien %PATH%; $value");
         std::fs::create_dir_all(&target).unwrap();
-        // 即使 cargo test 的 stdio 是管道，新终端也必须使用自己的控制台。
-        // 使用固定的相对文件名回传测试结果，绝不把 target 拼入 PowerShell 代码。
-        let process = windows_console::spawn_hidden(&executable,
-            "-NoExit -NoProfile -NonInteractive -Command \"$r = @{cwd=(Get-Location).Path; input=[Console]::IsInputRedirected; output=[Console]::IsOutputRedirected; error=[Console]::IsErrorRedirected}; [IO.File]::WriteAllText((Join-Path (Get-Location).Path 'result.json'), ($r | ConvertTo-Json)); exit\"",
-            &target).unwrap();
-        // SAFETY: process 是当前测试创建且仍持有的进程句柄；只允许终止该测试进程。
-        let status = unsafe { WaitForSingleObject(process.as_raw_handle(), 15_000) };
-        if status != WAIT_OBJECT_0 {
+        let result_path = target.join("result.json");
+        for attempt in 1..=ATTEMPTS {
+            // 即使 cargo test 的 stdio 是管道，新终端也必须使用自己的控制台。
+            // 使用固定的相对文件名回传测试结果，绝不把 target 拼入 PowerShell 代码；
+            // 重跑前清掉上一轮的结果文件，成功路径只会读到本轮的输出。
+            let _ = std::fs::remove_file(&result_path);
+            let spawn_started = std::time::Instant::now();
+            let process = windows_console::spawn_hidden(&executable,
+                "-NoExit -NoProfile -NonInteractive -Command \"$r = @{cwd=(Get-Location).Path; input=[Console]::IsInputRedirected; output=[Console]::IsOutputRedirected; error=[Console]::IsErrorRedirected}; [IO.File]::WriteAllText((Join-Path (Get-Location).Path 'result.json'), ($r | ConvertTo-Json)); exit\"",
+                &target).unwrap();
+            println!(
+                "real_powershell 第 {attempt}/{ATTEMPTS} 次尝试：拉起进程耗时 {:?}",
+                spawn_started.elapsed()
+            );
+            // 拉起进程与功能断言分开计时：冷启动慢发生在 CreateProcessW 加 PowerShell
+            // 生命周期内，断言本身恒定可忽略，分开打印便于定位超时落在哪一段。
+            let wait_started = std::time::Instant::now();
+            // SAFETY: process 是当前测试创建且仍持有的进程句柄；只允许终止该测试进程。
+            let status = unsafe { WaitForSingleObject(process.as_raw_handle(), TIMEOUT_MS) };
+            println!(
+                "real_powershell 第 {attempt}/{ATTEMPTS} 次尝试：等待 PowerShell 退出耗时 {:?}（WaitForSingleObject 返回 {status}）",
+                wait_started.elapsed()
+            );
+            if status == WAIT_OBJECT_0 {
+                let mut exit_code = 0;
+                assert_ne!(
+                    unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) },
+                    0
+                );
+                assert_eq!(exit_code, 0);
+                let result: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&result_path).unwrap()).unwrap();
+                for stream in ["input", "output", "error"] {
+                    assert_eq!(result[stream], false, "{stream} 不应继承父进程重定向");
+                }
+                // Windows TEMP 可能使用 RUNNER~1 等 8.3 短路径，而 PowerShell 会返回长路径。
+                // 比较真实目录身份，避免把同一目录的两种拼写误判为启动位置错误。
+                assert_eq!(
+                    std::fs::canonicalize(result["cwd"].as_str().unwrap()).unwrap(),
+                    std::fs::canonicalize(&target).unwrap()
+                );
+                return;
+            }
+            // SAFETY: 同上；超时先终止再重试，避免泄漏卡住的 powershell 进程。
             unsafe {
                 TerminateProcess(process.as_raw_handle(), 1);
             }
-            panic!("PowerShell 原生测试未在 15 秒内完成: {status}");
         }
-        let mut exit_code = 0;
-        assert_ne!(
-            unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) },
-            0
-        );
-        assert_eq!(exit_code, 0);
-        let result: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(target.join("result.json")).unwrap())
-                .unwrap();
-        for stream in ["input", "output", "error"] {
-            assert_eq!(result[stream], false, "{stream} 不应继承父进程重定向");
-        }
-        // Windows TEMP 可能使用 RUNNER~1 等 8.3 短路径，而 PowerShell 会返回长路径。
-        // 比较真实目录身份，避免把同一目录的两种拼写误判为启动位置错误。
-        assert_eq!(
-            std::fs::canonicalize(result["cwd"].as_str().unwrap()).unwrap(),
-            std::fs::canonicalize(&target).unwrap()
-        );
+        panic!("PowerShell 原生测试 {ATTEMPTS} 次尝试均未在 {TIMEOUT_MS} 毫秒内完成（各次耗时明细见上方输出）");
     }
 }
