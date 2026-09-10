@@ -68,6 +68,19 @@ pub fn run() {
     let pm_store = pm::store::PmStore::open(&store::app_data_dir().join("pm.sqlite3"))
         .expect("初始化 PM 数据库失败");
     tauri::Builder::default()
+        // 单实例：二次启动只激活已有实例的 main 窗口，不再出现第二个窗口/托盘图标。
+        // 必须单实例：pm.sqlite3 与 window-state 的状态文件都按单写者设计，
+        // 多实例并发读写会互相覆盖甚至损坏数据。插件要注册在 Builder 第一位，
+        // 尽早持有实例锁（锁在插件 setup 时创建，晚于本轮的 PmStore::open；
+        // 瞬态窗口由 open 的 busy_timeout 兜底——撞上首实例写事务时等待而非 panic）。
+        // 与「关闭进托盘」配合：窗口隐藏或最小化时，回调里 unminimize + show + set_focus 唤回。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 窗口状态记忆：持久化主窗口尺寸/位置/最大化状态，启动时恢复。
