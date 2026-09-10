@@ -314,6 +314,19 @@ pub struct LabelInfo {
     pub color: String,
 }
 
+fn parse_labels(i: &Value) -> Vec<LabelInfo> {
+    i["labels"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|l| LabelInfo {
+            name: l["name"].as_str().unwrap_or("").into(),
+            color: l["color"].as_str().unwrap_or("6e7681").into(),
+        })
+        .collect()
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueInfo {
@@ -346,22 +359,90 @@ pub async fn list_issues(state: State<'_, AppState>, owner: String, repo: String
             number: i["number"].as_u64().unwrap_or(0),
             title: i["title"].as_str().unwrap_or("").into(),
             state: i["state"].as_str().unwrap_or("open").into(),
-            labels: i["labels"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .map(|l| LabelInfo {
-                    name: l["name"].as_str().unwrap_or("").into(),
-                    color: l["color"].as_str().unwrap_or("6e7681").into(),
-                })
-                .collect(),
+            labels: parse_labels(&i),
             assignee: i["assignees"][0]["login"].as_str().map(|s| s.to_string()),
             url: i["html_url"].as_str().unwrap_or("").into(),
             created_at: i["created_at"].as_str().unwrap_or("").into(),
         });
     }
     Ok(out)
+}
+
+/// pm_sync_github 用：issue 首页全量（open + closed，按 created 倒序，100 条），
+/// 比 IssueInfo 多带 closed_at / body / assignees 供同步策略用
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncIssue {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub labels: Vec<LabelInfo>,
+    pub assignees: Vec<String>,
+    pub url: String,
+    pub created_at: String,
+    pub closed_at: Option<String>,
+    pub body: Option<String>,
+}
+
+pub async fn fetch_issues_for_sync(http: &Http, token: &str, owner: &str, repo: &str) -> Result<Vec<SyncIssue>, String> {
+    let v = gh_get(
+        http,
+        token,
+        &format!("/repos/{owner}/{repo}/issues"),
+        &[("state", "all"), ("per_page", "100"), ("sort", "created"), ("direction", "desc")],
+    )
+    .await?;
+    Ok(v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|i| i.get("pull_request").is_none()) // issues 端点混入 PR，过滤掉
+        .map(|i| SyncIssue {
+            number: i["number"].as_u64().unwrap_or(0),
+            title: i["title"].as_str().unwrap_or("").into(),
+            state: i["state"].as_str().unwrap_or("open").into(),
+            labels: parse_labels(i),
+            assignees: i["assignees"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|a| a["login"].as_str().map(|s| s.to_string()))
+                .collect(),
+            url: i["html_url"].as_str().unwrap_or("").into(),
+            created_at: i["created_at"].as_str().unwrap_or("").into(),
+            closed_at: i["closed_at"].as_str().map(|s| s.to_string()),
+            body: i["body"].as_str().map(|s| s.to_string()),
+        })
+        .collect())
+}
+
+/// pm_sync_github 用：open PR 的 title+body，供 closes/fixes #N 引用扫描
+#[derive(Serialize, Clone)]
+pub struct SyncPr {
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+}
+
+pub async fn fetch_open_prs_for_sync(http: &Http, token: &str, owner: &str, repo: &str) -> Result<Vec<SyncPr>, String> {
+    let v = gh_get(
+        http,
+        token,
+        &format!("/repos/{owner}/{repo}/pulls"),
+        &[("state", "open"), ("per_page", "100")],
+    )
+    .await?;
+    Ok(v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|i| SyncPr {
+            number: i["number"].as_u64().unwrap_or(0),
+            title: i["title"].as_str().unwrap_or("").into(),
+            body: i["body"].as_str().map(|s| s.to_string()),
+        })
+        .collect())
 }
 
 #[derive(Serialize, Clone)]
