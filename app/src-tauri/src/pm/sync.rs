@@ -617,4 +617,81 @@ mod tests {
         assert_eq!(snap.assignees, vec!["alice".to_string()]);
         assert_eq!(snap.closed_at, parse_rfc3339_to_epoch("2026-08-11T00:00:00Z"));
     }
+
+    /// 真实网络冒烟（#[ignore]，本地手动跑；CI 不依赖外网/登录）：
+    /// 复刻 pm_sync_github 的完整后端链路——ensure_token（keyring → gh CLI 兜底，
+    /// 正是 #66 断掉的环节）→ 并行拉 issues+open PR → recent_issues 过滤 →
+    /// 写入临时库。用公开仓 coconilu/gitgrove 验证验收标准：sync 后 open issue
+    /// 全部落 todo（含 #53/#40/#29）。
+    /// 跑法：cargo test real_sync_chain -- --ignored --nocapture
+    #[test]
+    #[ignore = "真实网络：依赖本机凭据与 GitHub 连通性"]
+    fn real_sync_chain_lands_open_issues_in_todo() {
+        use std::sync::Mutex;
+        let state = crate::AppState {
+            token: Mutex::new(None),
+            http: crate::github::Http::new(),
+            has_project_scope: Mutex::new(None),
+            projects_v2_cache: Mutex::new(None),
+            pm: Mutex::new(PmStore::open_memory()),
+        };
+        let token = crate::github::ensure_token(&state)
+            .expect("ensure_token 失败：keyring 与 gh CLI 均未提供 token");
+        let http = &state.http;
+
+        let (issues, prs) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            tokio::join!(
+                crate::github::fetch_issues_for_sync(http, &token, "coconilu", "gitgrove"),
+                crate::github::fetch_open_prs_for_sync(http, &token, "coconilu", "gitgrove"),
+            )
+        });
+        let issues = issues.expect("fetch_issues_for_sync 失败");
+        let prs = prs.expect("fetch_open_prs_for_sync 失败");
+        assert!(!issues.is_empty(), "issues 拉取为空：解析层把全部条目丢了");
+        assert!(
+            issues.iter().all(|i| i.number > 0 && !i.title.is_empty()),
+            "issue 解析出坏数据"
+        );
+        assert!(prs.iter().all(|p| p.number > 0), "open PR 解析出坏数据");
+
+        let signals = build_signals(&[], &[]);
+        let snapshots = recent_issues(
+            issues.into_iter().map(GithubIssueSnapshot::from).collect(),
+            crate::pm::store::now_ts(),
+        );
+
+        let scratch = std::env::temp_dir().join(format!("gitgrove-sync-smoke-{}", std::process::id()));
+        let store = PmStore::open(&scratch.join("pm.sqlite3")).unwrap();
+        let r = store
+            .sync_github("coconilu", "gitgrove", &snapshots, &signals)
+            .expect("sync_github 失败");
+        println!("sync result: created={} updated={} moved={}", r.created, r.updated, r.moved);
+        assert_eq!(r.created, snapshots.len(), "首次 sync 应逐条建卡");
+
+        let all = store
+            .list_items(&crate::pm::model::ItemFilter::default())
+            .unwrap();
+        assert_eq!(all.len(), snapshots.len());
+        // 验收（#66）：三个 open issue 必须落 todo 列
+        for n in [53, 40, 29] {
+            let card = all
+                .iter()
+                .find(|i| i.github_ref.as_deref() == Some(&format!("coconilu/gitgrove#{n}")))
+                .unwrap_or_else(|| panic!("issue #{n} 未入库"));
+            assert_eq!(card.status, "todo", "open issue #{n} 应落 todo，实际 {}", card.status);
+            assert!(!card.title.is_empty());
+        }
+        // 其余 open issue 同样落 todo；closed 落最后一列
+        let done_id = "done";
+        for i in &all {
+            let number: u64 = i.github_ref.as_deref().unwrap().rsplit('#').next().unwrap().parse().unwrap();
+            let snap = snapshots.iter().find(|s| s.number == number).unwrap();
+            if snap.state == "open" {
+                assert_eq!(i.status, "todo", "open issue #{number} 应落 todo");
+            } else {
+                assert_eq!(i.status, done_id, "closed issue #{number} 应落 done");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }

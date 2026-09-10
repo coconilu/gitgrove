@@ -263,6 +263,32 @@ export type PmSyncOutcome =
 	| { kind: "failed"; error: string }
 	| { kind: "timeout" };
 
+export interface PmSyncBanner {
+	kind: "error" | "changed";
+	message: string;
+}
+
+/**
+ * 同步结果 → 面板提示（单一文案来源，便于单测）。
+ * 失败/超时必须常驻面板（#66 教训：只弹 5 秒 toast，用户只见空看板不知原因）；
+ * 有变更时提示成功；无任何变更返回 null（不打扰）。
+ */
+export function syncBannerFromOutcome(
+	outcome: PmSyncOutcome,
+): PmSyncBanner | null {
+	if (outcome.kind === "failed")
+		return { kind: "error", message: "GitHub 同步失败：" + outcome.error };
+	if (outcome.kind === "timeout")
+		return { kind: "error", message: "GitHub 同步超时，可稍后手动刷新" };
+	const { created, updated, moved } = outcome.result;
+	if (created + updated + moved > 0)
+		return {
+			kind: "changed",
+			message: `GitHub 同步：新增 ${created} · 更新 ${updated} · 迁移 ${moved}`,
+		};
+	return null;
+}
+
 /**
  * 带超时兜底的 GitHub 同步：正常返回 synced/failed；同步悬挂（promise 永不
  * settle）时 timeoutMs 后收敛为 timeout，调用方据此 toast 并放弃本次等待。
