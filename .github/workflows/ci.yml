@@ -16,6 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # Rust 依赖缓存：prefix-key 含 workflow 名，gitgrove-CI-* 与 release.yml 的
+      # gitgrove-Release-* 是互不相通的缓存命名空间（check 产物暖不了 release 构建）；
+      # job id / os / rustc / Cargo.lock 哈希由 action 自动并入 key，
+      # lockfile 变动时自动回退到旧 lock 的缓存，只重建变化的部分。
+      # PR 只读 master 缓存不写入，避免缓存池被 PR 分支灌满。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: gitgrove-${{ github.workflow }}
+          workspaces: app/src-tauri
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
         with:
@@ -60,6 +73,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      # 与 check job 同属 gitgrove-CI-* 命名空间；job id 不同，两边缓存各自独立
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: gitgrove-${{ github.workflow }}
+          workspaces: app/src-tauri
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Check Tauri shell (cargo check)
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml

@@ -6,18 +6,7 @@ export function releaseTarget(eventName, event, sha, ref, preparedSha) {
 	const branch = event.repository.default_branch;
 	let target = sha;
 	let prerelease = false;
-	if (eventName === "workflow_run") {
-		const run = event.workflow_run;
-		if (
-			run.conclusion !== "success" ||
-			run.event !== "push" ||
-			run.head_branch !== branch ||
-			run.head_repository?.full_name !== event.repository.full_name ||
-			run.path !== ".github/workflows/ci.yml"
-		)
-			return null;
-		target = run.head_sha;
-	} else if (eventName === "workflow_dispatch") {
+	if (eventName === "workflow_dispatch") {
 		if (ref !== "refs/heads/" + branch)
 			throw new Error("请从默认分支运行发布流程");
 		if (event.inputs.bump !== "none") {
