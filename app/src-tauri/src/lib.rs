@@ -11,6 +11,9 @@ mod window_theme;
 
 use std::sync::Mutex;
 
+use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
+
 pub struct AppState {
     pub token: Mutex<Option<String>>,
     pub http: github::Http,
@@ -23,6 +26,43 @@ pub struct AppState {
     pub pm: Mutex<pm::store::PmStore>,
 }
 
+/// 系统托盘：菜单「显示主窗口」/「退出」；tooltip 应用名+版本。
+/// macOS 上表现为状态栏图标，行为一致。
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+    let tooltip = format!("GitGrove {}", app.package_info().version);
+
+    TrayIconBuilder::new()
+        .icon(
+            app.default_window_icon()
+                .expect("未配置默认窗口图标")
+                .clone(),
+        )
+        .tooltip(tooltip)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            // app.exit 直接结束进程，不触发 CloseRequested 拦截
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let pm_store = pm::store::PmStore::open(&store::app_data_dir().join("pm.sqlite3"))
@@ -30,6 +70,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 窗口状态记忆：持久化主窗口尺寸/位置/最大化状态，启动时恢复。
+        // 剔除 VISIBLE：关闭按钮是隐藏进托盘而非销毁，若持久化可见性，
+        // 从托盘退出时会把 visible=false 写入状态，下次启动窗口直接不显示。
+        // 插件恢复位置时会校验与当前显示器的交集，拔掉副屏后落在屏幕外
+        // 会自动回退到可见位置（见 tauri-plugin-window-state restore_state）。
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                .build(),
+        )
         .manage(AppState {
             token: Mutex::new(None),
             http: github::Http::new(),
@@ -37,15 +87,25 @@ pub fn run() {
             projects_v2_cache: Mutex::new(None),
             pm: Mutex::new(pm_store),
         })
-        .setup(|_app| {
+        .setup(|app| {
             #[cfg(windows)]
             {
-                use tauri::Manager;
-                if let Some(window) = _app.get_webview_window("main") {
+                if let Some(window) = app.get_webview_window("main") {
                     window_theme::apply(&window);
                 }
             }
+
+            setup_tray(app)?;
+
             Ok(())
+        })
+        // 关闭拦截：点 X 不退出，隐藏进托盘；托盘「退出」走 app.exit，
+        // 不触发 CloseRequested，不会死锁
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // 认证
