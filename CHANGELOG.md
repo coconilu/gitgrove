@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.2.6（2026-09-10）
+
+- Merge pull request #69 from coconilu/chore/tower-merge-m20-m23
+- Merge branch 'feat/ci-flake-real-powershell-53'
+- Merge branch 'feat/dsh-open-68'
+- fix(agents): StartedServer 仅对确认存活的子进程按 PID 清理进程树（r2 review P2）(#68)
+- fix(agents): DSH 实例复用与进程树清理（r1 review P2×3）(#68)
+- feat(agents): 「在…中打开」接入 DSH（deepseek-harness）(#68)
+- Merge pull request #67 from coconilu/chore/tower-merge-m19
+- style: biome organize imports in PmPanel
+- Merge branch 'feat/66'
+- fix(pm): keyring 恢复 windows-native，修复看板同步 0 卡片 (#66)
+- fix(launch): real_powershell 测试超时 15s→60s + 超时重跑一次 (#53)
+- Merge pull request #65 from coconilu/chore/tower-merge-m18
+- Merge branch 'feat/ci-rust-cache-prepare-64'
+- fix(ci): prepare job 补 checks:read 权限，rust-cache 注释如实写明命名空间互不相通
+- perf(ci): rust-cache 加速 Rust job，版本 PR 快速通道合并，去掉 workflow_run 空跑 (#64)
+
 ## v1.2.5（2026-09-10）
 
 - Merge pull request #62 from coconilu/chore/tower-merge-m16-m17
