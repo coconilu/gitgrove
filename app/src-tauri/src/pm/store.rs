@@ -1,6 +1,7 @@
 // PM SQLite store：rusqlite + migration 表，数据库文件放 app 数据目录（pm.sqlite3）
 
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::{params, Connection};
 
@@ -10,6 +11,10 @@ use super::order;
 const SCHEMA_VERSION: u32 = 1;
 const EXPORT_VERSION: u32 = 1;
 const STATUSES_KEY: &str = "statuses";
+/// 单实例锁在插件 setup 时才创建，晚于 PmStore::open；瞬态里二次实例可能
+/// 撞上首实例的写事务。rusqlite 默认 busy_timeout=0 会立即返回 SQLITE_BUSY，
+/// 让 run() 的 expect panic、双击激活静默失效；留 3s 等待窗口兜底。
+const BUSY_TIMEOUT_MS: u64 = 3000;
 
 pub struct PmStore {
     conn: Connection,
@@ -69,6 +74,8 @@ impl PmStore {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
         }
         let conn = Connection::open(path).map_err(|e| format!("打开 PM 数据库失败: {e}"))?;
+        conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+            .map_err(|e| format!("设置 busy_timeout 失败: {e}"))?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -946,5 +953,49 @@ mod tests {
         bad.items[0].order = "!!!".into();
         assert!(fresh.import(&bad).is_err());
         assert_eq!(fresh.export().unwrap(), export);
+    }
+
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("gitgrove-pm-store-{stamp}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn open_sets_busy_timeout_and_waits_for_concurrent_writer() {
+        let scratch = Scratch::new();
+        let db = scratch.0.join("pm.sqlite3");
+        let first = PmStore::open(&db).unwrap();
+        // busy_timeout 必须生效（rusqlite 默认 0，撞锁立即报错）
+        let timeout_ms: i64 = first
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout_ms, BUSY_TIMEOUT_MS as i64);
+
+        // 复刻二次启动场景：首实例连接持写事务时，第二个实例 open+migrate
+        // 在 busy_timeout 窗口内等到锁释放并成功。busy_timeout 失效时这里
+        // 会立即 SQLITE_BUSY 失败（防回归）；未撞上窗口时 open 直接成功，不会误报
+        let holder = Connection::open(&db).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let second = {
+            let db = db.clone();
+            std::thread::spawn(move || PmStore::open(&db))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        holder.execute_batch("COMMIT").unwrap();
+        second.join().unwrap().unwrap();
     }
 }
