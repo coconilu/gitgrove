@@ -25,10 +25,12 @@ import {
 	EMPTY_FILTER,
 	filterItems,
 	loadPmLocalData,
+	type PmSyncBanner,
 	PRIORITIES,
 	PRIORITY_LABELS,
 	pmSyncWithTimeout,
 	repoName,
+	syncBannerFromOutcome,
 } from "./model";
 
 export type PmView = "board" | "milestones";
@@ -54,6 +56,8 @@ export default function PmPanel({ p }: { p: Project }) {
 	);
 	const [columnsOpen, setColumnsOpen] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
+	/** 同步结果横幅：失败/超时常驻展示（#66 教训：只弹 toast 等于静默吞错） */
+	const [syncBanner, setSyncBanner] = useState<PmSyncBanner | null>(null);
 
 	/** 只加载本地数据（SQLite 毫秒级）。GitHub 同步不在此处——同步悬挂/失败
 	 * 都不能把看板卡在「正在加载」（#61 的根因就是旧版在此先 await 同步） */
@@ -76,23 +80,17 @@ export default function PmPanel({ p }: { p: Project }) {
 		}
 	}, []);
 
-	/** GitHub 同步后台执行：有变更时静默重载看板，失败/超时只 toast；
+	/** GitHub 同步后台执行：失败/超时以常驻横幅展示并可重试（只弹 toast 用户
+	 * 会错过，#66 的看板全空就是这么来的）；成功有变更时 toast + 静默重载；
 	 * 同步悬挂由 PM_SYNC_TIMEOUT_MS 收敛放弃等待，永不阻断看板（#61） */
 	const syncInBackground = useCallback(() => {
 		void pmSyncWithTimeout(p.id, { syncGithub: api.pmSyncGithub }).then(
 			(outcome) => {
-				if (outcome.kind === "synced") {
-					const { created, updated, moved } = outcome.result;
-					if (created + updated + moved > 0) {
-						toast(
-							`GitHub 同步：新增 ${created} · 更新 ${updated} · 迁移 ${moved}`,
-						);
-						void loadLocal();
-					}
-				} else if (outcome.kind === "failed") {
-					toast("GitHub 同步失败：" + outcome.error);
-				} else {
-					toast("GitHub 同步超时，可稍后手动刷新");
+				const banner = syncBannerFromOutcome(outcome);
+				setSyncBanner(banner?.kind === "error" ? banner : null);
+				if (banner?.kind === "changed") {
+					toast(banner.message);
+					void loadLocal();
 				}
 			},
 		);
@@ -385,6 +383,20 @@ export default function PmPanel({ p }: { p: Project }) {
 					</Button>
 				)}
 			</div>
+			{syncBanner?.kind === "error" && (
+				<div className="inline-error" role="alert">
+					<span>{syncBanner.message}</span>
+					<button
+						className="btn sm"
+						onClick={() => {
+							setSyncBanner(null);
+							syncInBackground();
+						}}
+					>
+						重试同步
+					</button>
+				</div>
+			)}
 			{view === "board" ? (
 				<BoardView
 					items={filtered}
