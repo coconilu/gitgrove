@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.3（2026-09-10）
+
+- chore: release v1.2.2 (#51)
+- Merge pull request #49 from coconilu/chore/tower-merge-m12
+- Merge remote-tracking branch 'origin/master' into chore/tower-merge-m12
+- Merge branch 'feat/windows-48'
+- feat(windows): 系统托盘（关闭进托盘）+ 窗口状态记忆 (#48)
+
 ## v1.2.2（2026-09-10）
 
 - Merge pull request #49 from coconilu/chore/tower-merge-m12
