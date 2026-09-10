@@ -1,41 +1,37 @@
 import { useEffect, useRef, useState } from "react";
+import { peekSwr, type SwrState, swrFetch } from "../store";
 
-export function useResource<T>(key: string, load: () => Promise<T>) {
+function initialSwr<T>(key: string, cache: boolean): SwrState<T> {
+	const cached = cache ? peekSwr<T>(key) : undefined;
+	return cached !== undefined
+		? { data: cached, error: "", loading: false, refreshing: true }
+		: { data: null, error: "", loading: true, refreshing: false };
+}
+
+export function useResource<T>(
+	key: string,
+	load: () => Promise<T>,
+	opts?: { cache?: boolean },
+) {
+	const useCache = opts?.cache === true;
 	const loader = useRef(load);
 	loader.current = load;
 	const [revision, setRevision] = useState(0);
-	const [state, setState] = useState<{
-		key: string;
-		data: T | null;
-		error: string;
-		loading: boolean;
-	}>({
+	const [state, setState] = useState<SwrState<T> & { key: string }>(() => ({
 		key,
-		data: null,
-		error: "",
-		loading: true,
-	});
+		...initialSwr<T>(key, useCache),
+	}));
 	// biome-ignore lint/correctness/useExhaustiveDependencies: revision 是显式重试信号
 	useEffect(() => {
-		let cancelled = false;
-		setState({ key, data: null, error: "", loading: true });
-		Promise.resolve()
-			.then(() => loader.current())
-			.then(
-				(data) => {
-					if (!cancelled) setState({ key, data, error: "", loading: false });
-				},
-				(error) => {
-					if (!cancelled)
-						setState({ key, data: null, error: String(error), loading: false });
-				},
-			);
-		return () => {
-			cancelled = true;
-		};
-	}, [key, revision]);
+		return swrFetch<T>({
+			key,
+			cache: useCache,
+			load: () => loader.current(),
+			emit: (next) => setState({ key, ...next }),
+		});
+	}, [key, revision, useCache]);
 	return {
-		...(state.key === key ? state : { data: null, error: "", loading: true }),
+		...(state.key === key ? state : { key, ...initialSwr<T>(key, useCache) }),
 		reload: () => setRevision((n) => n + 1),
 	};
 }
