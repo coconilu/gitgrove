@@ -9,7 +9,9 @@ import {
 	filterItems,
 	focusSummary,
 	groupByStatus,
+	issueUrl,
 	milestoneProgress,
+	parseGithubRef,
 	repoName,
 	sortMilestones,
 	todayString,
@@ -28,6 +30,7 @@ const item = (over) => ({
 	dueDate: null,
 	order: "a",
 	githubRef: null,
+	manualLock: false,
 	createdAt: 1,
 	updatedAt: 1,
 	...over,
@@ -195,4 +198,31 @@ test("repoName 取路径末段", () => {
 	assert.equal(repoName("C:\\work\\gitgrove"), "gitgrove");
 	assert.equal(repoName("/repos/demo/"), "demo");
 	assert.equal(todayString(new Date(2026, 8, 10)), "2026-09-10");
+});
+
+test("parseGithubRef 解析 owner/repo#number，非法格式返回 null", () => {
+	assert.deepEqual(parseGithubRef("coconilu/gitgrove#57"), {
+		owner: "coconilu",
+		repo: "gitgrove",
+		number: 57,
+	});
+	assert.deepEqual(parseGithubRef("o/r#1"), {
+		owner: "o",
+		repo: "r",
+		number: 1,
+	});
+	// 非法格式：缺 number / 多段 / 空串 / 杂质
+	assert.equal(parseGithubRef("coconilu/gitgrove#"), null);
+	assert.equal(parseGithubRef("coconilu/gitgrove"), null);
+	assert.equal(parseGithubRef("#57"), null);
+	assert.equal(parseGithubRef("a/b/c#12"), null);
+	assert.equal(parseGithubRef(""), null);
+});
+
+test("issueUrl 拼出 issue 链接，解析失败返回 null", () => {
+	assert.equal(
+		issueUrl("coconilu/gitgrove#57"),
+		"https://github.com/coconilu/gitgrove/issues/57",
+	);
+	assert.equal(issueUrl("bad-ref"), null);
 });
