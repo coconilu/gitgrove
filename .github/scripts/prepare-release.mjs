@@ -8,6 +8,7 @@ import {
 	runPullRequestCI,
 } from "./release-ci.mjs";
 import { createGitHubAPI } from "./release-github.mjs";
+import { hasRequiredCheck } from "./release-target.mjs";
 
 const VERSION_FILES = [
 	"app/package.json",
@@ -31,6 +32,59 @@ export function assertVersionFiles(files, actual, expected) {
 	}
 }
 
+// 快速通道前提：master HEAD 已有绿 CI。与 version job 校验合并提交使用同一个
+// hasRequiredCheck 标准（GitHub Actions 产出的最新 check 必须 success）。
+export async function masterHasGreenCI(api, sha) {
+	const { check_runs: checkRuns } = await api(
+		"/commits/" + sha + "/check-runs?filter=latest&per_page=100",
+	);
+	return hasRequiredCheck(checkRuns ?? []);
+}
+
+// 快速通道本地校验：版本 PR 只改版本文件且 master 已有绿 CI 时，
+// PR 内的源码与主分支完全一致，两个版本文件可解析且版本一致 + biome check 通过即可合并。
+export function assertFastTrackVersionFiles(pkgText, tauriText) {
+	let pkg;
+	let tauri;
+	try {
+		pkg = JSON.parse(pkgText);
+	} catch (error) {
+		throw new Error("app/package.json 不是有效的 JSON: " + error.message);
+	}
+	try {
+		tauri = JSON.parse(tauriText);
+	} catch (error) {
+		throw new Error(
+			"app/src-tauri/tauri.conf.json 不是有效的 JSON: " + error.message,
+		);
+	}
+	if (pkg.version !== tauri.version)
+		throw new Error(
+			"package.json 与 tauri.conf.json 版本不一致: " +
+				pkg.version +
+				" != " +
+				tauri.version,
+		);
+}
+
+// 快速通道合并：分支保护若要求版本 PR 自身的 check（如 PR #49 撞过的
+// "Required status check ... is expected."），回退等待该 PR 的 CI 完成后再合并。
+export function mergeWithPRCIFallback({ merge, waitForPRCI }) {
+	return async (...args) => {
+		try {
+			return await merge(...args);
+		} catch (error) {
+			if (
+				error?.status !== 405 ||
+				!/required status check/i.test(error.message ?? "")
+			)
+				throw error;
+			await waitForPRCI();
+			return merge(...args);
+		}
+	};
+}
+
 async function main() {
 	const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 	const branch = event.repository.default_branch;
@@ -47,6 +101,14 @@ async function main() {
 	const baseSha = run("git", ["rev-parse", "HEAD"]);
 	if (baseSha !== process.env.GITHUB_SHA)
 		throw new Error("准备版本的源码不是本次触发的提交");
+	// 快速通道判定：master HEAD 已有绿 CI 时，版本 PR 只改版本文件、源码与主分支
+	// 完全一致，可跳过完整 CI 等待（见下方 checkPR / merge 的 fastTrack 分支）。
+	const fastTrack = await masterHasGreenCI(api, baseSha);
+	summary(
+		fastTrack
+			? "master HEAD 已有绿 CI，版本 PR 走快速通道：本地校验版本文件后按分支保护合并"
+			: "master HEAD 尚无绿 CI，版本 PR 等待完整 CI 后合并",
+	);
 	// Each run owns a branch. Historical release-v* leftovers cannot block a new run.
 	const head = "codex/release-" + runId;
 	run("node", [".github/scripts/bump-version.mjs", process.env.BUMP]);
@@ -105,7 +167,7 @@ async function main() {
 				body:
 					"同步版本号与 CHANGELOG 到 v" +
 					version +
-					"。\n\n本次手动发布自动运行版本提交的 CI，通过后按分支保护规则合并，再校验合并提交并构建发布。仅包含自动生成的版本文件，无需手动批准 PR 工作流或再次合并。",
+					"。\n\n本次手动发布自动处理版本提交：主分支已有绿 CI 时仅做本地快速校验（版本文件可解析 + biome check）后按分支保护合并，若分支保护要求本 PR 的 check 则自动等待其完成；否则等待版本 PR 的完整 CI。合并后再校验合并提交并构建发布。仅包含自动生成的版本文件，无需手动批准 PR 工作流或再次合并。",
 			},
 		});
 	}
@@ -123,7 +185,33 @@ async function main() {
 		throw new Error("版本 PR 的提交发生变化，停止发布");
 	summary("版本 PR（自动处理）: " + pr.html_url);
 	const sha = await completeVersionRelease(pr, {
-		checkPR: (candidate) => runPullRequestCI(api, candidate),
+		checkPR: fastTrack
+			? async () => {
+					const pkgText = readFileSync("app/package.json", "utf8");
+					const tauriText = readFileSync(
+						"app/src-tauri/tauri.conf.json",
+						"utf8",
+					);
+					assertFastTrackVersionFiles(pkgText, tauriText);
+					const { devDependencies } = JSON.parse(pkgText);
+					const biome = devDependencies?.["@biomejs/biome"];
+					if (!biome)
+						throw new Error("app/package.json 未声明 @biomejs/biome 版本");
+					// 与 CI 的 pnpm lint（biome ci ..）同一标准，固定用仓库声明的版本；
+					// src-tauri 当前在 biome 排除列表里会被跳过，取消排除后此处自动全覆盖
+					execFileSync(
+						"npx",
+						[
+							"--yes",
+							"@biomejs/biome@" + biome,
+							"check",
+							"app/package.json",
+							"app/src-tauri/tauri.conf.json",
+						],
+						{ stdio: "inherit" },
+					);
+				}
+			: (candidate) => runPullRequestCI(api, candidate),
 		check: (ref, commit) => runCI(api, ref, commit),
 		assertCurrent: async (ref, commit) => {
 			const current = await api("/git/ref/heads/" + ref);
@@ -132,8 +220,19 @@ async function main() {
 					"主分支已发生变化，停止本次发布；可在当前主分支重新运行。",
 				);
 		},
-		merge: (number, commit) =>
-			mergeVersionPR(api, number, commit, branch, baseSha),
+		merge: fastTrack
+			? mergeWithPRCIFallback({
+					merge: (number, commit) =>
+						mergeVersionPR(api, number, commit, branch, baseSha),
+					waitForPRCI: () => {
+						summary(
+							"分支保护要求版本 PR 自身的 check，回退等待该 CI 完成后合并",
+						);
+						return runPullRequestCI(api, pr);
+					},
+				})
+			: (number, commit) =>
+					mergeVersionPR(api, number, commit, branch, baseSha),
 	});
 	appendFileSync(process.env.GITHUB_OUTPUT, "sha=" + sha + "\n");
 	summary(
