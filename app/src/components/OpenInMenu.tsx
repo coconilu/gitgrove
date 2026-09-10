@@ -8,6 +8,7 @@ import { useStore } from "../store";
 type Destination =
 	| "codex"
 	| "kimi"
+	| "dsh"
 	| "zcode"
 	| "editor"
 	| "terminal"
@@ -16,6 +17,7 @@ type Destination =
 const labels: Record<Destination, string> = {
 	codex: "Codex",
 	kimi: "Kimi Code",
+	dsh: "DSH",
 	zcode: "ZCode",
 	editor: "默认编辑器",
 	terminal: "默认终端",
@@ -132,7 +134,9 @@ export function OpenInMenu({
 								key={destination}
 								disabled={
 									target !== null ||
-									((destination === "codex" || destination === "kimi") &&
+									((destination === "codex" ||
+										destination === "kimi" ||
+										destination === "dsh") &&
 										supported !== true)
 								}
 								onClick={() => void launch(destination)}
@@ -141,7 +145,7 @@ export function OpenInMenu({
 							</button>
 						))}
 					{supported === false && (
-						<p className="muted">Codex / Kimi Code 暂仅支持 Windows。</p>
+						<p className="muted">Codex / Kimi Code / DSH 暂仅支持 Windows。</p>
 					)}
 					{supported === null && !error && (
 						<p className="muted">检查工具支持…</p>

@@ -581,6 +581,223 @@ fn server_start_uses_individual_arguments_and_neutral_cwd() {
         .any(|(key, value)| key == "KIMI_CODE_HOME" && value == Some(home.as_os_str())));
 }
 
+#[test]
+fn dsh_detection_orders_global_cli_before_npx_fallback() {
+    let candidates = dsh_candidates(
+        true,
+        Some(PathBuf::from(r"C:\Users\u\AppData\Roaming")),
+        vec![
+            PathBuf::from(r"C:\Program Files\nodejs"),
+            PathBuf::from(r"C:\bin"),
+        ],
+    );
+    assert_eq!(
+        candidates[0],
+        PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd")
+    );
+    assert_eq!(
+        candidates[1],
+        PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\npx.cmd")
+    );
+    assert_eq!(
+        candidates[2],
+        PathBuf::from(r"C:\Program Files\nodejs\dsh.cmd")
+    );
+    assert_eq!(
+        candidates[3],
+        PathBuf::from(r"C:\Program Files\nodejs\npx.cmd")
+    );
+    assert_eq!(candidates[4], PathBuf::from(r"C:\bin\dsh.cmd"));
+    assert_eq!(candidates[5], PathBuf::from(r"C:\bin\npx.cmd"));
+    // macOS 形状（未实测）：仅按 PATH 探测 dsh / npx，同一函数在 Windows 上也可执行验证。
+    let mac = dsh_candidates(false, None, vec![PathBuf::from("/usr/local/bin")]);
+    assert_eq!(
+        mac,
+        [
+            PathBuf::from("/usr/local/bin/dsh"),
+            PathBuf::from("/usr/local/bin/npx"),
+        ]
+    );
+}
+
+#[test]
+fn dsh_command_uses_explicit_port_and_neutral_cwd() {
+    let home = git::home_dir();
+    let cli = dsh_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"), 41207);
+    assert_eq!(
+        cli.get_args().collect::<Vec<_>>(),
+        ["web", "--host", "127.0.0.1", "--port", "41207", "--no-open"]
+    );
+    assert_eq!(cli.get_current_dir(), Some(home.as_path()));
+    // npx 兜底必须带上包名；目录永不作为位置参数传递（会被 dsh 静默忽略）。
+    let npx = dsh_command(Path::new(r"C:\Program Files\nodejs\npx.cmd"), 41208);
+    assert_eq!(
+        npx.get_args().collect::<Vec<_>>(),
+        [
+            "--yes",
+            "@deepseek-ai/dsh",
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "41208",
+            "--no-open"
+        ]
+    );
+    assert_eq!(npx.get_current_dir(), Some(home.as_path()));
+}
+
+#[tokio::test]
+async fn dsh_start_reports_ready_only_after_tcp_port_serves() {
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    // %5 即 start_dsh 传给 dsh 的端口参数（web --host 127.0.0.1 --port %5
+    // --no-open 的第 5 个参数）：桩进程用它在回环上监听，验证端口真实透传
+    // 且就绪判定只认 TCP 连接成功。
+    std::fs::write(
+        &stub,
+        "@echo off\r\npowershell -NoProfile -NonInteractive -Command \"$l=\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%5);\
+         $l.Start();Start-Sleep -Seconds 10;$l.Stop()\"\r\n",
+    )
+    .unwrap();
+    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    drop(owned);
+}
+
+#[tokio::test]
+async fn dsh_start_fails_fast_when_process_exits_without_serving() {
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(&stub, "@echo off\r\nexit /b 3\r\n").unwrap();
+    let error = match start_dsh(&stub, Duration::from_secs(30)).await {
+        Ok(_) => panic!("an exiting stub must never be reported ready"),
+        Err(error) => error,
+    };
+    assert!(error.contains("退出"));
+}
+
+#[test]
+fn dsh_port_record_keeps_recent_dedupes_and_survives_corruption() {
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    for port in [
+        50001u16, 50002, 50003, 50004, 50005, 50006, 50007, 50008, 50009,
+    ] {
+        dsh_record_port(&record, port);
+    }
+    // 最近优先、最多保留 8 条：最早的 50001 被挤出。
+    assert_eq!(
+        dsh_read_ports(&record),
+        vec![50009, 50008, 50007, 50006, 50005, 50004, 50003, 50002]
+    );
+    // 重复记录提到最前而不是产生重复项。
+    dsh_record_port(&record, 50004);
+    assert_eq!(dsh_read_ports(&record)[0], 50004);
+    assert!(dsh_read_ports(&record)[1..].iter().all(|p| *p != 50004));
+    // 端口 0 不合法，读取时过滤。
+    std::fs::write(&record, serde_json::to_string(&[0u16, 50001]).unwrap()).unwrap();
+    assert_eq!(dsh_read_ports(&record), vec![50001]);
+    // 损坏文件自愈为空列表。
+    std::fs::write(&record, "not-json").unwrap();
+    assert!(dsh_read_ports(&record).is_empty());
+}
+
+#[tokio::test]
+async fn dsh_first_live_port_skips_dead_and_honors_candidate_order() {
+    // 存活端口真实监听；死端口先绑定再释放（回环拒连立即返回）。
+    let live_first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let dead_port = live_first.local_addr().unwrap().port();
+    let live_second = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let live_port = live_second.local_addr().unwrap().port();
+    drop(live_first);
+    assert_eq!(
+        dsh_first_live_port(vec![dead_port, live_port]).await,
+        Some(live_port)
+    );
+    assert_eq!(
+        dsh_first_live_port(vec![live_port, dead_port]).await,
+        Some(live_port)
+    );
+    assert_eq!(dsh_first_live_port(vec![dead_port]).await, None);
+}
+
+#[tokio::test]
+async fn started_server_skips_tree_cleanup_for_already_exited_child() {
+    // 早退路径：子进程已退出时 PID 可能被 OS 复用，绝不允许按 PID taskkill
+    // （guard 必须为 false）；对照组：存活子进程允许清树（超时路径依赖它）。
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(&stub, "@echo off\r\nexit /b 0\r\n").unwrap();
+    let mut exited = git::new_cmd(&stub.to_string_lossy())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if exited.try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        exited.try_wait().unwrap().is_some(),
+        "stub must have exited"
+    );
+    assert!(!StartedServer::tree_cleanup_allowed(&mut exited));
+    let _ = exited.kill();
+    let _ = exited.wait();
+
+    let mut live = git::new_cmd("cmd")
+        .args(["/C", "ping", "-n", "2", "127.0.0.1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(StartedServer::tree_cleanup_allowed(&mut live));
+    let _ = live.kill();
+    let _ = live.wait();
+}
+
+#[tokio::test]
+async fn started_server_drop_kills_the_whole_server_process_tree() {
+    // 运行中 server 的 Drop 必须连 powershell 这类孙进程一起清掉（r1 P2）：
+    // 桩 cmd 等待 powershell 子进程监听端口，drop 后端口必须变为不可达。
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(
+        &stub,
+        "@echo off\r\npowershell -NoProfile -NonInteractive -Command \"$l=\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%5);\
+         $l.Start();Start-Sleep -Seconds 30;$l.Stop()\"\r\n",
+    )
+    .unwrap();
+    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    drop(owned);
+    for _ in 0..20 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    panic!("the whole server process tree must die with StartedServer");
+}
+
 #[tokio::test]
 #[ignore = "Windows GUI acceptance: opens an external app, requires explicit target and tool"]
 async fn desktop_open() {
@@ -589,7 +806,8 @@ async fn desktop_open() {
     let agent = match std::env::var("GITGROVE_AGENT_TOOL").as_deref() {
         Ok("codex") => Agent::Codex,
         Ok("kimi") => Agent::Kimi,
-        _ => panic!("set GITGROVE_AGENT_TOOL=codex or kimi"),
+        Ok("dsh") => Agent::Dsh,
+        _ => panic!("set GITGROVE_AGENT_TOOL=codex, kimi or dsh"),
     };
     let receipt = open_in_agent(path, agent).await.unwrap();
     println!("{}", receipt.message);
