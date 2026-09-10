@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use crate::git;
+use crate::{git, store};
 
 #[cfg(windows)]
 mod transport;
@@ -26,6 +26,7 @@ static OPEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub enum Agent {
     Codex,
     Kimi,
+    Dsh,
 }
 
 #[tauri::command]
@@ -84,14 +85,17 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
             return Ok(());
         }
         return Err(match agent {
-            Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。",
-            Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。",
-        }.into());
+            Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。".to_string(),
+            Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。".to_string(),
+            Agent::Dsh => format!(
+                "DSH 已在本地 {url} 启动，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。"
+            ),
+        });
     }
     #[cfg(not(windows))]
     {
         let _ = (url, agent);
-        Err("本版本的 Codex / Kimi Code 图形界面入口仅在 Windows 启用。".into())
+        Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into())
     }
 }
 
@@ -427,12 +431,38 @@ fn server_command(executable: &Path, home: &Path, port: u16) -> Command {
 }
 
 struct StartedServer(Option<Child>);
+impl StartedServer {
+    /// 仅当子进程确认仍存活时才允许按 PID 清理进程树：启动即退（已回收）或
+    /// 状态未知时 PID 可能已被 OS 复用，taskkill 会误杀无关进程树。
+    fn tree_cleanup_allowed(child: &mut Child) -> bool {
+        matches!(child.try_wait(), Ok(None))
+    }
+}
 impl Drop for StartedServer {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
+        let Some(child) = &mut self.0 else { return };
+        if !Self::tree_cleanup_allowed(child) {
+            // 已退出：无树可清，回收退出状态即可。
             let _ = child.wait();
+            return;
         }
+        // dsh 经 .cmd shim / npx 启动：child 是 cmd.exe 包装层，仅 kill 会把
+        // npm/node 孙进程留成孤儿继续占用端口。Windows 先用 taskkill /T /F
+        // 清掉整棵进程树——树必须在 shim 仍存活时枚举，故先于 kill() 执行；
+        // 再 kill+wait 收尸。Job Object 更彻底，但对常量参数的短生命周期
+        // 进程，taskkill 已足够（与本仓 NSIS hooks 的 KILL_ON_JOB_CLOSE 思路同源）。
+        #[cfg(windows)]
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let taskkill = PathBuf::from(root).join("System32/taskkill.exe");
+            let _ = git::new_cmd(&taskkill.to_string_lossy())
+                .args(["/T", "/F", "/PID", &child.id().to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 impl StartedServer {
@@ -494,6 +524,175 @@ async fn connect_kimi_inner(home: &Path) -> Result<(Kimi, Option<StartedServer>)
     }
 }
 
+// DSH 没有实例注册表，运行检测只能靠 TCP 端口探测：dsh 进程是 node.exe，
+// 按进程名无法与其它 Node 服务区分（进程名探测不可靠）。
+fn dsh_candidates(
+    windows_layout: bool,
+    appdata: Option<PathBuf>,
+    path_dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if windows_layout {
+        // Windows：全局安装（npm install -g）落在 %APPDATA%\npm\dsh.cmd；
+        // 未全局安装时用 npx.cmd 兜底现场拉起 @deepseek-ai/dsh。
+        if let Some(npm) = appdata.map(|dir| dir.join("npm")) {
+            candidates.push(npm.join("dsh.cmd"));
+            candidates.push(npm.join("npx.cmd"));
+        }
+        for dir in path_dirs {
+            candidates.push(dir.join("dsh.cmd"));
+            candidates.push(dir.join("npx.cmd"));
+        }
+    } else {
+        // macOS：仅按 PATH 探测 dsh / npx（未实测，等待真实环境验证）。
+        for dir in path_dirs {
+            candidates.push(dir.join("dsh"));
+            candidates.push(dir.join("npx"));
+        }
+    }
+    candidates
+}
+
+fn dsh_executable() -> Result<PathBuf, String> {
+    let appdata = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        None
+    };
+    let path_dirs = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .filter(|p| p.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    dsh_candidates(cfg!(windows), appdata, path_dirs)
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            "未找到 DSH 命令行工具。请先运行 npm install -g @deepseek-ai/dsh，或将 npx 加入 PATH 后重启 GitGrove。".into()
+        })
+}
+
+fn dsh_command(executable: &Path, port: u16) -> Command {
+    let mut command = git::new_cmd(&executable.to_string_lossy());
+    // npx 兜底：--yes 跳过非交互环境下的安装确认；包名之后原样透传 dsh 参数。
+    if executable.file_name().is_some_and(|name| {
+        name.eq_ignore_ascii_case("npx.cmd") || name.eq_ignore_ascii_case("npx")
+    }) {
+        command.args(["--yes", "@deepseek-ai/dsh"]);
+    }
+    // 目录不作为位置参数传递：dsh 无法携带项目目录，首次由用户在其界面选择。
+    // --host 显式固定回环：0.1.x 预览版的默认绑定值可能漂移，就绪探测与
+    // 打开的 URL 都依赖回环，不能依赖默认行为。
+    command
+        .args([
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--no-open",
+        ])
+        .current_dir(git::home_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+// DSH 默认端口（用户手动 `dsh web` 时的监听口）；本应用 spawn 时避开它选空闲端口。
+const DSH_DEFAULT_PORT: u16 = 3080;
+
+// DSH 没有实例注册表（kimi 有 server/instances）：复用只能依据本应用历史
+// spawn 时记录的端口与默认端口。记录中的端口来自本应用发起的 dsh，且 TCP
+// 就绪判定本就只用端口探测（进程名不可靠），残余的误指向风险接受并在
+// dsh_first_live_port 限制为仅回环。
+fn dsh_port_record() -> PathBuf {
+    store::app_data_dir().join("dsh-web-ports.json")
+}
+
+fn dsh_read_ports(record: &Path) -> Vec<u16> {
+    std::fs::read_to_string(record)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<u16>>(&text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|port| (1..=u16::MAX).contains(port))
+        .take(8)
+        .collect()
+}
+
+fn dsh_record_port(record: &Path, port: u16) {
+    let mut ports = dsh_read_ports(record);
+    ports.retain(|existing| *existing != port);
+    ports.insert(0, port);
+    ports.truncate(8);
+    if let Ok(text) = serde_json::to_string(&ports) {
+        let _ = std::fs::write(record, text);
+    }
+}
+
+async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
+    for port in candidates {
+        let probe = tokio::time::timeout(
+            Duration::from_millis(400),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await;
+        if matches!(probe, Ok(Ok(_))) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+const DSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn start_dsh(
+    executable: &Path,
+    ready_timeout: Duration,
+) -> Result<(u16, StartedServer), String> {
+    // 向系统要一个空闲端口（参照 connect_kimi）：默认 3080 可能被占用。
+    // 端口释放与 dsh 实际绑定之间存在竞窗，桌面环境下足够小。
+    let socket = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|_| "无法分配本地端口，请检查系统网络设置。")?;
+    let port = socket
+        .local_addr()
+        .map_err(|_| "无法分配本地端口，请检查系统网络设置。")?
+        .port();
+    drop(socket);
+    let mut owned = StartedServer(Some(
+        dsh_command(executable, port)
+            .spawn()
+            .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?,
+    ));
+    let deadline = tokio::time::Instant::now() + ready_timeout;
+    loop {
+        // 就绪检测同样是 TCP 端口探测，进程名不可靠。
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return Ok((port, owned));
+        }
+        if owned
+            .0
+            .as_mut()
+            .unwrap()
+            .try_wait()
+            .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?
+            .is_some()
+        {
+            return Err("DSH 启动后即退出，请检查 npm 全局安装或网络后重试。".into());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("DSH 启动超时，本次启动的进程已停止。请检查网络或 npx 安装后重试。".into());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenReceipt {
@@ -503,7 +702,7 @@ pub struct OpenReceipt {
 #[tauri::command]
 pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, String> {
     if !agent_open_support() {
-        return Err("本版本的 Codex / Kimi Code 图形界面入口仅在 Windows 启用。".into());
+        return Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into());
     }
     // A backend guard also protects multiple windows and callers bypassing the UI.
     let _guard = OPEN_LOCK
@@ -530,6 +729,36 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             }
             Ok(OpenReceipt {
                 message: "Kimi Code 工作区已登记，已请求浏览器打开对应会话。",
+            })
+        }
+        Agent::Dsh => {
+            // dsh 无法携带项目目录：打开 web 首页，首次由用户在 DSH 界面选择
+            // 项目目录（dsh 会记住）。绝不走 launch.rs 的编辑器 spec 模式——
+            // 那条路会把目录当位置参数传入并被 dsh 静默忽略。
+            // 先复用已有实例（历史端口 + 默认端口，含用户手动启动的 dsh web），
+            // 探测不到存活端口才新起，避免重复点击堆积 node.exe 常驻进程。
+            let mut candidates = dsh_read_ports(&dsh_port_record());
+            if !candidates.contains(&DSH_DEFAULT_PORT) {
+                candidates.push(DSH_DEFAULT_PORT);
+            }
+            if let Some(port) = dsh_first_live_port(candidates).await {
+                let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+                open_gui_url(&url, agent)?;
+                return Ok(OpenReceipt {
+                    message: "DSH 已在本地运行，已请求浏览器打开本地服务。",
+                });
+            }
+            let executable = dsh_executable()?;
+            let (port, owned) = start_dsh(&executable, DSH_READY_TIMEOUT).await?;
+            dsh_record_port(&dsh_port_record(), port);
+            let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+            // 常驻进程先转交后台再打开浏览器：浏览器失败时服务仍在，
+            // 错误文案里的本地地址可手动访问。
+            owned.retain();
+            open_gui_url(&url, agent)?;
+            Ok(OpenReceipt {
+                message:
+                    "DSH 已启动，已请求浏览器打开本地服务。首次使用需在 DSH 界面选择项目目录。",
             })
         }
     }
