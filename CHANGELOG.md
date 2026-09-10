@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.3（2026-09-10）
+
+- Merge pull request #55 from coconilu/chore/tower-merge-m13
+- Merge branch 'feat/54'
+- fix(pm): PmStore::open 设置 busy_timeout=3s，二次启动撞写锁不再 panic
+- feat(single-instance): 二次启动只激活已有实例 (#54)
+
 ## v1.2.2（2026-09-10）
 
 - Merge pull request #49 from coconilu/chore/tower-merge-m12
