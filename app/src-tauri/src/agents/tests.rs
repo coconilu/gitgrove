@@ -581,6 +581,90 @@ fn server_start_uses_individual_arguments_and_neutral_cwd() {
         .any(|(key, value)| key == "KIMI_CODE_HOME" && value == Some(home.as_os_str())));
 }
 
+#[test]
+fn dsh_detection_orders_global_cli_before_npx_fallback() {
+    let candidates = dsh_candidates(
+        true,
+        Some(PathBuf::from(r"C:\Users\u\AppData\Roaming")),
+        vec![
+            PathBuf::from(r"C:\Program Files\nodejs"),
+            PathBuf::from(r"C:\bin"),
+        ],
+    );
+    assert_eq!(candidates[0], PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"));
+    assert_eq!(candidates[1], PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\npx.cmd"));
+    assert_eq!(candidates[2], PathBuf::from(r"C:\Program Files\nodejs\dsh.cmd"));
+    assert_eq!(candidates[3], PathBuf::from(r"C:\Program Files\nodejs\npx.cmd"));
+    assert_eq!(candidates[4], PathBuf::from(r"C:\bin\dsh.cmd"));
+    assert_eq!(candidates[5], PathBuf::from(r"C:\bin\npx.cmd"));
+    // macOS 形状（未实测）：仅按 PATH 探测 dsh / npx，同一函数在 Windows 上也可执行验证。
+    let mac = dsh_candidates(false, None, vec![PathBuf::from("/usr/local/bin")]);
+    assert_eq!(
+        mac,
+        [
+            PathBuf::from("/usr/local/bin/dsh"),
+            PathBuf::from("/usr/local/bin/npx"),
+        ]
+    );
+}
+
+#[test]
+fn dsh_command_uses_explicit_port_and_neutral_cwd() {
+    let home = git::home_dir();
+    let cli = dsh_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"), 41207);
+    assert_eq!(
+        cli.get_args().collect::<Vec<_>>(),
+        ["web", "--port", "41207", "--no-open"]
+    );
+    assert_eq!(cli.get_current_dir(), Some(home.as_path()));
+    // npx 兜底必须带上包名；目录永不作为位置参数传递（会被 dsh 静默忽略）。
+    let npx = dsh_command(Path::new(r"C:\Program Files\nodejs\npx.cmd"), 41208);
+    assert_eq!(
+        npx.get_args().collect::<Vec<_>>(),
+        [
+            "--yes",
+            "@deepseek-ai/dsh",
+            "web",
+            "--port",
+            "41208",
+            "--no-open"
+        ]
+    );
+    assert_eq!(npx.get_current_dir(), Some(home.as_path()));
+}
+
+#[tokio::test]
+async fn dsh_start_reports_ready_only_after_tcp_port_serves() {
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    // %3 即 start_dsh 传给 dsh 的端口参数（web --port %3 --no-open）：
+    // 桩进程用它在回环上监听，验证端口真实透传且就绪判定依赖 TCP 连接成功。
+    std::fs::write(
+        &stub,
+        "@echo off\r\npowershell -NoProfile -NonInteractive -Command \"$l=\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%3);\
+         $l.Start();Start-Sleep -Seconds 10;$l.Stop()\"\r\n",
+    )
+    .unwrap();
+    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    drop(owned);
+}
+
+#[tokio::test]
+async fn dsh_start_fails_fast_when_process_exits_without_serving() {
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    std::fs::write(&stub, "@echo off\r\nexit /b 3\r\n").unwrap();
+    let error = match start_dsh(&stub, Duration::from_secs(30)).await {
+        Ok(_) => panic!("an exiting stub must never be reported ready"),
+        Err(error) => error,
+    };
+    assert!(error.contains("退出"));
+}
+
 #[tokio::test]
 #[ignore = "Windows GUI acceptance: opens an external app, requires explicit target and tool"]
 async fn desktop_open() {
@@ -589,7 +673,8 @@ async fn desktop_open() {
     let agent = match std::env::var("GITGROVE_AGENT_TOOL").as_deref() {
         Ok("codex") => Agent::Codex,
         Ok("kimi") => Agent::Kimi,
-        _ => panic!("set GITGROVE_AGENT_TOOL=codex or kimi"),
+        Ok("dsh") => Agent::Dsh,
+        _ => panic!("set GITGROVE_AGENT_TOOL=codex, kimi or dsh"),
     };
     let receipt = open_in_agent(path, agent).await.unwrap();
     println!("{}", receipt.message);

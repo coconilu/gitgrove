@@ -26,6 +26,7 @@ static OPEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub enum Agent {
     Codex,
     Kimi,
+    Dsh,
 }
 
 #[tauri::command]
@@ -84,14 +85,17 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
             return Ok(());
         }
         return Err(match agent {
-            Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。",
-            Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。",
-        }.into());
+            Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。".to_string(),
+            Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。".to_string(),
+            Agent::Dsh => format!(
+                "DSH 已在本地 {url} 启动，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。"
+            ),
+        });
     }
     #[cfg(not(windows))]
     {
         let _ = (url, agent);
-        Err("本版本的 Codex / Kimi Code 图形界面入口仅在 Windows 启用。".into())
+        Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into())
     }
 }
 
@@ -494,6 +498,120 @@ async fn connect_kimi_inner(home: &Path) -> Result<(Kimi, Option<StartedServer>)
     }
 }
 
+// DSH 没有实例注册表，运行检测只能靠 TCP 端口探测：dsh 进程是 node.exe，
+// 按进程名无法与其它 Node 服务区分（进程名探测不可靠）。
+fn dsh_candidates(
+    windows_layout: bool,
+    appdata: Option<PathBuf>,
+    path_dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if windows_layout {
+        // Windows：全局安装（npm install -g）落在 %APPDATA%\npm\dsh.cmd；
+        // 未全局安装时用 npx.cmd 兜底现场拉起 @deepseek-ai/dsh。
+        if let Some(npm) = appdata.map(|dir| dir.join("npm")) {
+            candidates.push(npm.join("dsh.cmd"));
+            candidates.push(npm.join("npx.cmd"));
+        }
+        for dir in path_dirs {
+            candidates.push(dir.join("dsh.cmd"));
+            candidates.push(dir.join("npx.cmd"));
+        }
+    } else {
+        // macOS：仅按 PATH 探测 dsh / npx（未实测，等待真实环境验证）。
+        for dir in path_dirs {
+            candidates.push(dir.join("dsh"));
+            candidates.push(dir.join("npx"));
+        }
+    }
+    candidates
+}
+
+fn dsh_executable() -> Result<PathBuf, String> {
+    let appdata = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        None
+    };
+    let path_dirs = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .filter(|p| p.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    dsh_candidates(cfg!(windows), appdata, path_dirs)
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            "未找到 DSH 命令行工具。请先运行 npm install -g @deepseek-ai/dsh，或将 npx 加入 PATH 后重启 GitGrove。".into()
+        })
+}
+
+fn dsh_command(executable: &Path, port: u16) -> Command {
+    let mut command = git::new_cmd(&executable.to_string_lossy());
+    // npx 兜底：--yes 跳过非交互环境下的安装确认；包名之后原样透传 dsh 参数。
+    if executable.file_name().is_some_and(|name| {
+        name.eq_ignore_ascii_case("npx.cmd") || name.eq_ignore_ascii_case("npx")
+    }) {
+        command.args(["--yes", "@deepseek-ai/dsh"]);
+    }
+    // 目录不作为位置参数传递：dsh 无法携带项目目录，首次由用户在其界面选择。
+    command
+        .args(["web", "--port", &port.to_string(), "--no-open"])
+        .current_dir(git::home_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+const DSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn start_dsh(
+    executable: &Path,
+    ready_timeout: Duration,
+) -> Result<(u16, StartedServer), String> {
+    // 向系统要一个空闲端口（参照 connect_kimi）：默认 3080 可能被占用。
+    // 端口释放与 dsh 实际绑定之间存在竞窗，桌面环境下足够小。
+    let socket = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|_| "无法分配本地端口，请检查系统网络设置。")?;
+    let port = socket
+        .local_addr()
+        .map_err(|_| "无法分配本地端口，请检查系统网络设置。")?
+        .port();
+    drop(socket);
+    let mut owned = StartedServer(Some(
+        dsh_command(executable, port)
+            .spawn()
+            .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?,
+    ));
+    let deadline = tokio::time::Instant::now() + ready_timeout;
+    loop {
+        // 就绪检测同样是 TCP 端口探测，进程名不可靠。
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return Ok((port, owned));
+        }
+        if owned
+            .0
+            .as_mut()
+            .unwrap()
+            .try_wait()
+            .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?
+            .is_some()
+        {
+            return Err("DSH 启动后即退出，请检查 npm 全局安装或网络后重试。".into());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("DSH 启动超时，本次启动的进程已停止。请检查网络或 npx 安装后重试。".into());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenReceipt {
@@ -503,7 +621,7 @@ pub struct OpenReceipt {
 #[tauri::command]
 pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, String> {
     if !agent_open_support() {
-        return Err("本版本的 Codex / Kimi Code 图形界面入口仅在 Windows 启用。".into());
+        return Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into());
     }
     // A backend guard also protects multiple windows and callers bypassing the UI.
     let _guard = OPEN_LOCK
@@ -530,6 +648,22 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             }
             Ok(OpenReceipt {
                 message: "Kimi Code 工作区已登记，已请求浏览器打开对应会话。",
+            })
+        }
+        Agent::Dsh => {
+            // dsh 无法携带项目目录：打开 web 首页，首次由用户在 DSH 界面选择
+            // 项目目录（dsh 会记住）。绝不走 launch.rs 的编辑器 spec 模式——
+            // 那条路会把目录当位置参数传入并被 dsh 静默忽略。
+            let executable = dsh_executable()?;
+            let (port, owned) = start_dsh(&executable, DSH_READY_TIMEOUT).await?;
+            let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+            // 常驻进程先转交后台再打开浏览器：浏览器失败时服务仍在，
+            // 错误文案里的本地地址可手动访问。
+            owned.retain();
+            open_gui_url(&url, agent)?;
+            Ok(OpenReceipt {
+                message:
+                    "DSH 已启动，已请求浏览器打开本地服务。首次使用需在 DSH 界面选择项目目录。",
             })
         }
     }
