@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.4（2026-09-10）
+
+- Merge pull request #58 from coconilu/chore/tower-merge-m14-m15
+- Merge branch 'feat/p2-github-57'
+- feat(pm): GitHub 同步卡片展示 + 手动锁定 (#57)
+- Merge branch 'feat/p2-github-issue-57'
+- fix(pm): migration 原子化 + ALTER 幂等守卫，消除半迁移永久 wedge
+- feat(pm): GitHub issue → 看板同步引擎 + manual_lock 字段 (#57)
+
 ## v1.2.3（2026-09-10）
 
 - Merge pull request #55 from coconilu/chore/tower-merge-m13
