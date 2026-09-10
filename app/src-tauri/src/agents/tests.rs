@@ -591,10 +591,22 @@ fn dsh_detection_orders_global_cli_before_npx_fallback() {
             PathBuf::from(r"C:\bin"),
         ],
     );
-    assert_eq!(candidates[0], PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"));
-    assert_eq!(candidates[1], PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\npx.cmd"));
-    assert_eq!(candidates[2], PathBuf::from(r"C:\Program Files\nodejs\dsh.cmd"));
-    assert_eq!(candidates[3], PathBuf::from(r"C:\Program Files\nodejs\npx.cmd"));
+    assert_eq!(
+        candidates[0],
+        PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd")
+    );
+    assert_eq!(
+        candidates[1],
+        PathBuf::from(r"C:\Users\u\AppData\Roaming\npm\npx.cmd")
+    );
+    assert_eq!(
+        candidates[2],
+        PathBuf::from(r"C:\Program Files\nodejs\dsh.cmd")
+    );
+    assert_eq!(
+        candidates[3],
+        PathBuf::from(r"C:\Program Files\nodejs\npx.cmd")
+    );
     assert_eq!(candidates[4], PathBuf::from(r"C:\bin\dsh.cmd"));
     assert_eq!(candidates[5], PathBuf::from(r"C:\bin\npx.cmd"));
     // macOS 形状（未实测）：仅按 PATH 探测 dsh / npx，同一函数在 Windows 上也可执行验证。
@@ -614,7 +626,7 @@ fn dsh_command_uses_explicit_port_and_neutral_cwd() {
     let cli = dsh_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"), 41207);
     assert_eq!(
         cli.get_args().collect::<Vec<_>>(),
-        ["web", "--port", "41207", "--no-open"]
+        ["web", "--host", "127.0.0.1", "--port", "41207", "--no-open"]
     );
     assert_eq!(cli.get_current_dir(), Some(home.as_path()));
     // npx 兜底必须带上包名；目录永不作为位置参数传递（会被 dsh 静默忽略）。
@@ -625,6 +637,8 @@ fn dsh_command_uses_explicit_port_and_neutral_cwd() {
             "--yes",
             "@deepseek-ai/dsh",
             "web",
+            "--host",
+            "127.0.0.1",
             "--port",
             "41208",
             "--no-open"
@@ -637,12 +651,13 @@ fn dsh_command_uses_explicit_port_and_neutral_cwd() {
 async fn dsh_start_reports_ready_only_after_tcp_port_serves() {
     let scratch = Scratch::new();
     let stub = scratch.0.join("dsh.cmd");
-    // %3 即 start_dsh 传给 dsh 的端口参数（web --port %3 --no-open）：
-    // 桩进程用它在回环上监听，验证端口真实透传且就绪判定依赖 TCP 连接成功。
+    // %5 即 start_dsh 传给 dsh 的端口参数（web --host 127.0.0.1 --port %5
+    // --no-open 的第 5 个参数）：桩进程用它在回环上监听，验证端口真实透传
+    // 且就绪判定只认 TCP 连接成功。
     std::fs::write(
         &stub,
         "@echo off\r\npowershell -NoProfile -NonInteractive -Command \"$l=\
-         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%3);\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%5);\
          $l.Start();Start-Sleep -Seconds 10;$l.Stop()\"\r\n",
     )
     .unwrap();
@@ -663,6 +678,55 @@ async fn dsh_start_fails_fast_when_process_exits_without_serving() {
         Err(error) => error,
     };
     assert!(error.contains("退出"));
+}
+
+#[test]
+fn dsh_port_record_keeps_recent_dedupes_and_survives_corruption() {
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    for port in [
+        50001u16, 50002, 50003, 50004, 50005, 50006, 50007, 50008, 50009,
+    ] {
+        dsh_record_port(&record, port);
+    }
+    // 最近优先、最多保留 8 条：最早的 50001 被挤出。
+    assert_eq!(
+        dsh_read_ports(&record),
+        vec![50009, 50008, 50007, 50006, 50005, 50004, 50003, 50002]
+    );
+    // 重复记录提到最前而不是产生重复项。
+    dsh_record_port(&record, 50004);
+    assert_eq!(dsh_read_ports(&record)[0], 50004);
+    assert!(dsh_read_ports(&record)[1..].iter().all(|p| *p != 50004));
+    // 端口 0 不合法，读取时过滤。
+    std::fs::write(&record, serde_json::to_string(&[0u16, 50001]).unwrap()).unwrap();
+    assert_eq!(dsh_read_ports(&record), vec![50001]);
+    // 损坏文件自愈为空列表。
+    std::fs::write(&record, "not-json").unwrap();
+    assert!(dsh_read_ports(&record).is_empty());
+}
+
+#[tokio::test]
+async fn dsh_first_live_port_skips_dead_and_honors_candidate_order() {
+    // 存活端口真实监听；死端口先绑定再释放（回环拒连立即返回）。
+    let live_first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let dead_port = live_first.local_addr().unwrap().port();
+    let live_second = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let live_port = live_second.local_addr().unwrap().port();
+    drop(live_first);
+    assert_eq!(
+        dsh_first_live_port(vec![dead_port, live_port]).await,
+        Some(live_port)
+    );
+    assert_eq!(
+        dsh_first_live_port(vec![live_port, dead_port]).await,
+        Some(live_port)
+    );
+    assert_eq!(dsh_first_live_port(vec![dead_port]).await, None);
 }
 
 #[tokio::test]

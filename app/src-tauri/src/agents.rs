@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use crate::git;
+use crate::{git, store};
 
 #[cfg(windows)]
 mod transport;
@@ -433,10 +433,24 @@ fn server_command(executable: &Path, home: &Path, port: u16) -> Command {
 struct StartedServer(Option<Child>);
 impl Drop for StartedServer {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
+        let Some(child) = &mut self.0 else { return };
+        // dsh 经 .cmd shim / npx 启动：child 是 cmd.exe 包装层，仅 kill 会把
+        // npm/node 孙进程留成孤儿继续占用端口。Windows 先用 taskkill /T /F
+        // 清掉整棵进程树——树必须在 shim 仍存活时枚举，故先于 kill() 执行；
+        // 再 kill+wait 收尸。Job Object 更彻底，但对常量参数的短生命周期
+        // 进程，taskkill 已足够（与本仓 NSIS hooks 的 KILL_ON_JOB_CLOSE 思路同源）。
+        #[cfg(windows)]
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let taskkill = PathBuf::from(root).join("System32/taskkill.exe");
+            let _ = git::new_cmd(&taskkill.to_string_lossy())
+                .args(["/T", "/F", "/PID", &child.id().to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 impl StartedServer {
@@ -557,13 +571,68 @@ fn dsh_command(executable: &Path, port: u16) -> Command {
         command.args(["--yes", "@deepseek-ai/dsh"]);
     }
     // 目录不作为位置参数传递：dsh 无法携带项目目录，首次由用户在其界面选择。
+    // --host 显式固定回环：0.1.x 预览版的默认绑定值可能漂移，就绪探测与
+    // 打开的 URL 都依赖回环，不能依赖默认行为。
     command
-        .args(["web", "--port", &port.to_string(), "--no-open"])
+        .args([
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--no-open",
+        ])
         .current_dir(git::home_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+// DSH 默认端口（用户手动 `dsh web` 时的监听口）；本应用 spawn 时避开它选空闲端口。
+const DSH_DEFAULT_PORT: u16 = 3080;
+
+// DSH 没有实例注册表（kimi 有 server/instances）：复用只能依据本应用历史
+// spawn 时记录的端口与默认端口。记录中的端口来自本应用发起的 dsh，且 TCP
+// 就绪判定本就只用端口探测（进程名不可靠），残余的误指向风险接受并在
+// dsh_first_live_port 限制为仅回环。
+fn dsh_port_record() -> PathBuf {
+    store::app_data_dir().join("dsh-web-ports.json")
+}
+
+fn dsh_read_ports(record: &Path) -> Vec<u16> {
+    std::fs::read_to_string(record)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<u16>>(&text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|port| (1..=u16::MAX).contains(port))
+        .take(8)
+        .collect()
+}
+
+fn dsh_record_port(record: &Path, port: u16) {
+    let mut ports = dsh_read_ports(record);
+    ports.retain(|existing| *existing != port);
+    ports.insert(0, port);
+    ports.truncate(8);
+    if let Ok(text) = serde_json::to_string(&ports) {
+        let _ = std::fs::write(record, text);
+    }
+}
+
+async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
+    for port in candidates {
+        let probe = tokio::time::timeout(
+            Duration::from_millis(400),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await;
+        if matches!(probe, Ok(Ok(_))) {
+            return Some(port);
+        }
+    }
+    None
 }
 
 const DSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -654,8 +723,22 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             // dsh 无法携带项目目录：打开 web 首页，首次由用户在 DSH 界面选择
             // 项目目录（dsh 会记住）。绝不走 launch.rs 的编辑器 spec 模式——
             // 那条路会把目录当位置参数传入并被 dsh 静默忽略。
+            // 先复用已有实例（历史端口 + 默认端口，含用户手动启动的 dsh web），
+            // 探测不到存活端口才新起，避免重复点击堆积 node.exe 常驻进程。
+            let mut candidates = dsh_read_ports(&dsh_port_record());
+            if !candidates.contains(&DSH_DEFAULT_PORT) {
+                candidates.push(DSH_DEFAULT_PORT);
+            }
+            if let Some(port) = dsh_first_live_port(candidates).await {
+                let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+                open_gui_url(&url, agent)?;
+                return Ok(OpenReceipt {
+                    message: "DSH 已在本地运行，已请求浏览器打开本地服务。",
+                });
+            }
             let executable = dsh_executable()?;
             let (port, owned) = start_dsh(&executable, DSH_READY_TIMEOUT).await?;
+            dsh_record_port(&dsh_port_record(), port);
             let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
             // 常驻进程先转交后台再打开浏览器：浏览器失败时服务仍在，
             // 错误文案里的本地地址可手动访问。
