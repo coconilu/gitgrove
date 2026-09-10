@@ -53,9 +53,12 @@ pub struct Item {
     /// 看板列内排序键（fractional indexing，字符串序）
     #[serde(rename = "order", default)]
     pub order: String,
-    /// P2 GitHub 互通预留位（issue/PR 引用），本期不填
+    /// GitHub 互通引用，格式 `owner/repo#number`；同步引擎按此匹配 upsert
     #[serde(default)]
     pub github_ref: Option<String>,
+    /// 人工拖动过的 GitHub 同步卡片：自动迁移跳过（字段/标题/标签仍刷新）
+    #[serde(default)]
+    pub manual_lock: bool,
     #[serde(default)]
     pub created_at: i64,
     #[serde(default)]

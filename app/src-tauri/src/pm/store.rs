@@ -8,8 +8,83 @@ use rusqlite::{params, Connection};
 use super::model::*;
 use super::order;
 
-const SCHEMA_VERSION: u32 = 1;
 const EXPORT_VERSION: u32 = 1;
+/// 列是否已存在。SQLite 没有 ADD COLUMN IF NOT EXISTS，用 PRAGMA table_info
+/// 做幂等守卫：让含 ALTER 的迁移在「schema 已在、版本未记账」的中间态
+/// （进程被杀 / 异常中断残留）下可自愈，不再 duplicate column 永久 wedge。
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for name in rows {
+        if name.map_err(|e| e.to_string())? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn items_has_manual_lock(conn: &Connection) -> Result<bool, String> {
+    column_exists(conn, "items", "manual_lock")
+}
+
+/// 版本化迁移：按序应用；每个版本「DDL + 版本记账」包在同一事务里，
+/// 中途被杀整体回滚、下次 open 原子重试。v1 初始 schema（全 IF NOT EXISTS）；
+/// v2 items 加 manual_lock（GitHub 同步卡片的人工锁定标记）；v3 github_ref
+/// 索引（同步引擎按 owner/repo#number 匹配 upsert）。
+type Guard = fn(&Connection) -> Result<bool, String>;
+const MIGRATIONS: &[(u32, &str, Option<Guard>)] = &[
+    (
+        1,
+        "CREATE TABLE IF NOT EXISTS items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL DEFAULT 'none',
+            milestone_id TEXT,
+            labels TEXT NOT NULL DEFAULT '[]',
+            repo_path TEXT,
+            branch TEXT,
+            due_date TEXT,
+            ord TEXT NOT NULL,
+            github_ref TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            deleted_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_items_status_ord ON items(status, ord);
+        CREATE INDEX IF NOT EXISTS idx_items_milestone ON items(milestone_id);
+        CREATE TABLE IF NOT EXISTS milestones (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            due_date TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            github_ref TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+        None,
+    ),
+    (
+        2,
+        "ALTER TABLE items ADD COLUMN manual_lock INTEGER NOT NULL DEFAULT 0;",
+        Some(items_has_manual_lock),
+    ),
+    (
+        3,
+        "CREATE INDEX IF NOT EXISTS idx_items_github_ref ON items(github_ref);",
+        None,
+    ),
+];
 const STATUSES_KEY: &str = "statuses";
 /// 单实例锁在插件 setup 时才创建，晚于 PmStore::open；瞬态里二次实例可能
 /// 撞上首实例的写事务。rusqlite 默认 busy_timeout=0 会立即返回 SQLITE_BUSY，
@@ -17,10 +92,10 @@ const STATUSES_KEY: &str = "statuses";
 const BUSY_TIMEOUT_MS: u64 = 3000;
 
 pub struct PmStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
-fn now_ts() -> i64 {
+pub(crate) fn now_ts() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -31,7 +106,7 @@ pub fn new_id() -> String {
     ulid::Ulid::generate().to_string()
 }
 
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+pub(crate) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     let labels_json: String = row.get("labels")?;
     Ok(Item {
         id: row.get("id")?,
@@ -46,6 +121,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         due_date: row.get("due_date")?,
         order: row.get("ord")?,
         github_ref: row.get("github_ref")?,
+        manual_lock: row.get("manual_lock")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         deleted_at: row.get("deleted_at")?,
@@ -65,8 +141,8 @@ fn row_to_milestone(row: &rusqlite::Row<'_>) -> rusqlite::Result<Milestone> {
     })
 }
 
-const ITEM_COLS: &str =
-    "id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, created_at, updated_at, deleted_at";
+pub(crate) const ITEM_COLS: &str =
+    "id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at";
 
 impl PmStore {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -82,7 +158,7 @@ impl PmStore {
     }
 
     #[cfg(test)]
-    fn open_memory() -> Self {
+    pub(crate) fn open_memory() -> Self {
         let conn = Connection::open_in_memory().expect("打开内存数据库失败");
         let store = Self { conn };
         store.migrate().expect("migration 失败");
@@ -98,7 +174,7 @@ impl PmStore {
                 );",
             )
             .map_err(|e| e.to_string())?;
-        let applied: Vec<u32> = {
+        let applied: std::collections::HashSet<u32> = {
             let mut stmt = self
                 .conn
                 .prepare("SELECT version FROM _pm_migrations")
@@ -106,52 +182,41 @@ impl PmStore {
             let rows = stmt
                 .query_map([], |r| r.get(0))
                 .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<u32>, _>>().map_err(|e| e.to_string())?
+            rows.collect::<Result<Vec<u32>, _>>()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect()
         };
-        if applied.contains(&SCHEMA_VERSION) {
-            return Ok(());
-        }
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS items (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    body TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
-                    priority TEXT NOT NULL DEFAULT 'none',
-                    milestone_id TEXT,
-                    labels TEXT NOT NULL DEFAULT '[]',
-                    repo_path TEXT,
-                    branch TEXT,
-                    due_date TEXT,
-                    ord TEXT NOT NULL,
-                    github_ref TEXT,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    deleted_at INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_items_status_ord ON items(status, ord);
-                CREATE INDEX IF NOT EXISTS idx_items_milestone ON items(milestone_id);
-                CREATE TABLE IF NOT EXISTS milestones (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
-                    due_date TEXT,
-                    status TEXT NOT NULL DEFAULT 'open',
-                    github_ref TEXT,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );",
+        for (version, sql, guard) in MIGRATIONS {
+            if applied.contains(version) {
+                continue;
+            }
+            // guard 命中 = DDL 已在但版本未记账的中间态：补记账自愈，跳过 DDL
+            if let Some(guard) = guard {
+                if guard(&self.conn)? {
+                    self.record_version(*version)?;
+                    continue;
+                }
+            }
+            // 单事务原子应用：DDL 失败连记账一起回滚，不会留下半迁移状态
+            let tx = self.conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(sql)
+                .map_err(|e| format!("PM schema v{version} 迁移失败: {e}"))?;
+            tx.execute(
+                "INSERT OR IGNORE INTO _pm_migrations(version, applied_at) VALUES (?1, ?2)",
+                params![version, now_ts()],
             )
-            .map_err(|e| format!("PM schema 初始化失败: {e}"))?;
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn record_version(&self, version: u32) -> Result<(), String> {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO _pm_migrations(version, applied_at) VALUES (?1, ?2)",
-                params![SCHEMA_VERSION, now_ts()],
+                params![version, now_ts()],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -280,7 +345,7 @@ impl PmStore {
     }
 
     /// 列内最大排序键（排除指定 item 与 tombstone）
-    fn last_key_in_column(&self, status: &str, exclude_id: Option<&str>) -> Result<Option<String>, String> {
+    pub(crate) fn last_key_in_column(&self, status: &str, exclude_id: Option<&str>) -> Result<Option<String>, String> {
         self.conn
             .query_row(
                 "SELECT ord FROM items WHERE status = ?1 AND deleted_at IS NULL AND id IS NOT ?2 ORDER BY ord DESC LIMIT 1",
@@ -370,6 +435,7 @@ impl PmStore {
             due_date: input.due_date.clone(),
             order,
             github_ref: None,
+            manual_lock: false,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -378,23 +444,24 @@ impl PmStore {
         Ok(item)
     }
 
-    fn insert_item(&self, item: &Item) -> Result<(), String> {
+    pub(crate) fn insert_item(&self, item: &Item) -> Result<(), String> {
         let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
         self.conn
             .execute(
-                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, created_at, updated_at, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.github_ref, item.created_at, item.updated_at, item.deleted_at,
+                    item.order, item.github_ref, item.manual_lock, item.created_at, item.updated_at, item.deleted_at,
                 ],
             )
             .map_err(|e| format!("写入 item 失败: {e}"))?;
         Ok(())
     }
 
-    /// 全字段更新（PUT 语义）：order / created_at / github_ref 由服务端保留
+    /// 全字段更新（PUT 语义）：order / created_at / github_ref 由服务端保留；
+    /// manualLock 随 PUT 透传（人工拖动 GitHub 卡片时由前端置位）
     pub fn update_item(&self, patch: &Item) -> Result<Item, String> {
         let existing = self.get_active_item(&patch.id)?;
         Self::validate_title(&patch.title)?;
@@ -422,6 +489,7 @@ impl PmStore {
             repo_path: patch.repo_path.clone(),
             branch: patch.branch.clone(),
             due_date: patch.due_date.clone(),
+            manual_lock: patch.manual_lock,
             order,
             updated_at: now_ts(),
             ..existing
@@ -429,11 +497,11 @@ impl PmStore {
         let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
         self.conn
             .execute(
-                "UPDATE items SET title=?2, body=?3, status=?4, priority=?5, milestone_id=?6, labels=?7, repo_path=?8, branch=?9, due_date=?10, ord=?11, updated_at=?12 WHERE id=?1",
+                "UPDATE items SET title=?2, body=?3, status=?4, priority=?5, milestone_id=?6, labels=?7, repo_path=?8, branch=?9, due_date=?10, ord=?11, manual_lock=?12, updated_at=?13 WHERE id=?1",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.updated_at,
+                    item.order, item.manual_lock, item.updated_at,
                 ],
             )
             .map_err(|e| format!("更新 item 失败: {e}"))?;
@@ -679,12 +747,12 @@ impl PmStore {
             }
             let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
             tx.execute(
-                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, created_at, updated_at, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL)",
+                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.github_ref, item.created_at, item.updated_at,
+                    item.order, item.github_ref, item.manual_lock, item.created_at, item.updated_at,
                 ],
             )
             .map_err(|e| format!("导入 item 失败: {e}"))?;
@@ -723,6 +791,63 @@ mod tests {
         let s2 = store.statuses().unwrap();
         assert_eq!(s1, s2);
         assert_eq!(s1.len(), 4);
+    }
+
+    #[test]
+    fn migrate_self_heals_wedged_version_state() {
+        // 复刻非原子迁移的中间态：v1 schema 已建、manual_lock 列已 ALTER，
+        // 但 _pm_migrations 未记 v2/v3（进程在 DDL 与记账之间被杀的残留）。
+        // open 必须补记账自愈，而不是重试 ALTER 报 duplicate column 永久失败
+        let scratch = Scratch::new();
+        let db = scratch.0.join("pm.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            // 真实 v1 schema + 记账（crash 前提：v1 已完整应用）
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _pm_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute_batch(MIGRATIONS[0].1).unwrap();
+            conn.execute(
+                "INSERT INTO _pm_migrations(version, applied_at) VALUES (1, 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("ALTER TABLE items ADD COLUMN manual_lock INTEGER NOT NULL DEFAULT 0;")
+                .unwrap();
+            // crash 点：ALTER 已落盘、v2/v3 未记账
+        }
+
+        let store = PmStore::open(&db).unwrap();
+        // v2 靠 guard 跳过 DDL 只补记账；v3 索引补齐
+        let mut versions: Vec<u32> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT version FROM _pm_migrations")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        versions.sort();
+        assert_eq!(versions, vec![1, 2, 3]);
+        let indexes: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_items_github_ref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1);
+        // 自愈后库可用，老数据行 manual_lock 默认 false
+        let item = store.create_item(&new_item("自愈后可用", None)).unwrap();
+        assert!(!item.manual_lock);
+        assert!(store.get_active_item(&item.id).is_ok());
     }
 
     #[test]
@@ -953,6 +1078,39 @@ mod tests {
         bad.items[0].order = "!!!".into();
         assert!(fresh.import(&bad).is_err());
         assert_eq!(fresh.export().unwrap(), export);
+    }
+
+    #[test]
+    fn manual_lock_persists_and_defaults_false_for_legacy_rows() {
+        let store = PmStore::open_memory();
+        let item = store.create_item(&new_item("a", None)).unwrap();
+        assert!(!item.manual_lock);
+
+        // PUT 透传：manualLock 由前端传入并落库
+        let updated = store
+            .update_item(&Item { manual_lock: true, ..item.clone() })
+            .unwrap();
+        assert!(updated.manual_lock);
+        assert!(store.get_active_item(&item.id).unwrap().manual_lock);
+
+        // v1 老行（无 manual_lock 列值）→ 默认 false
+        store
+            .conn
+            .execute(
+                "INSERT INTO items(id, title, body, status, priority, labels, ord, created_at, updated_at)
+                 VALUES ('legacy', '老行', '', 'todo', 'none', '[]', 'g', 0, 0)",
+                [],
+            )
+            .unwrap();
+        assert!(!store.get_active_item("legacy").unwrap().manual_lock);
+
+        // 导出/导入往返保留 manualLock
+        let export = store.export().unwrap();
+        assert!(export.items.iter().find(|i| i.id == item.id).unwrap().manual_lock);
+        let fresh = PmStore::open_memory();
+        let n = fresh.import(&export).unwrap();
+        assert_eq!(n.items, 2);
+        assert!(fresh.get_active_item(&item.id).unwrap().manual_lock);
     }
 
     struct Scratch(std::path::PathBuf);

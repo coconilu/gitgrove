@@ -141,6 +141,7 @@ pub fn run() {
             pm::pm_delete_milestone,
             pm::pm_export_json,
             pm::pm_import_json,
+            pm::pm_sync_github,
             // 项目 / clone
             projects::check_clone_target,
             projects::clone_repo,
