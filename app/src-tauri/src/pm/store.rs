@@ -9,10 +9,34 @@ use super::model::*;
 use super::order;
 
 const EXPORT_VERSION: u32 = 1;
-/// 版本化迁移：按序应用、每版恰好执行一次（幂等靠 _pm_migrations 记账）。
-/// v1 初始 schema；v2 items 加 manual_lock（GitHub 同步卡片的人工锁定标记）
-/// 并建 github_ref 索引（同步引擎按 owner/repo#number 匹配 upsert）。
-const MIGRATIONS: &[(u32, &str)] = &[
+/// 列是否已存在。SQLite 没有 ADD COLUMN IF NOT EXISTS，用 PRAGMA table_info
+/// 做幂等守卫：让含 ALTER 的迁移在「schema 已在、版本未记账」的中间态
+/// （进程被杀 / 异常中断残留）下可自愈，不再 duplicate column 永久 wedge。
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for name in rows {
+        if name.map_err(|e| e.to_string())? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn items_has_manual_lock(conn: &Connection) -> Result<bool, String> {
+    column_exists(conn, "items", "manual_lock")
+}
+
+/// 版本化迁移：按序应用；每个版本「DDL + 版本记账」包在同一事务里，
+/// 中途被杀整体回滚、下次 open 原子重试。v1 初始 schema（全 IF NOT EXISTS）；
+/// v2 items 加 manual_lock（GitHub 同步卡片的人工锁定标记）；v3 github_ref
+/// 索引（同步引擎按 owner/repo#number 匹配 upsert）。
+type Guard = fn(&Connection) -> Result<bool, String>;
+const MIGRATIONS: &[(u32, &str, Option<Guard>)] = &[
     (
         1,
         "CREATE TABLE IF NOT EXISTS items (
@@ -48,11 +72,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );",
+        None,
     ),
     (
         2,
-        "ALTER TABLE items ADD COLUMN manual_lock INTEGER NOT NULL DEFAULT 0;
-         CREATE INDEX IF NOT EXISTS idx_items_github_ref ON items(github_ref);",
+        "ALTER TABLE items ADD COLUMN manual_lock INTEGER NOT NULL DEFAULT 0;",
+        Some(items_has_manual_lock),
+    ),
+    (
+        3,
+        "CREATE INDEX IF NOT EXISTS idx_items_github_ref ON items(github_ref);",
+        None,
     ),
 ];
 const STATUSES_KEY: &str = "statuses";
@@ -157,20 +187,38 @@ impl PmStore {
                 .into_iter()
                 .collect()
         };
-        for (version, sql) in MIGRATIONS {
+        for (version, sql, guard) in MIGRATIONS {
             if applied.contains(version) {
                 continue;
             }
-            self.conn
-                .execute_batch(sql)
+            // guard 命中 = DDL 已在但版本未记账的中间态：补记账自愈，跳过 DDL
+            if let Some(guard) = guard {
+                if guard(&self.conn)? {
+                    self.record_version(*version)?;
+                    continue;
+                }
+            }
+            // 单事务原子应用：DDL 失败连记账一起回滚，不会留下半迁移状态
+            let tx = self.conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(sql)
                 .map_err(|e| format!("PM schema v{version} 迁移失败: {e}"))?;
-            self.conn
-                .execute(
-                    "INSERT OR IGNORE INTO _pm_migrations(version, applied_at) VALUES (?1, ?2)",
-                    params![version, now_ts()],
-                )
-                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT OR IGNORE INTO _pm_migrations(version, applied_at) VALUES (?1, ?2)",
+                params![version, now_ts()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    fn record_version(&self, version: u32) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO _pm_migrations(version, applied_at) VALUES (?1, ?2)",
+                params![version, now_ts()],
+            )
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -743,6 +791,63 @@ mod tests {
         let s2 = store.statuses().unwrap();
         assert_eq!(s1, s2);
         assert_eq!(s1.len(), 4);
+    }
+
+    #[test]
+    fn migrate_self_heals_wedged_version_state() {
+        // 复刻非原子迁移的中间态：v1 schema 已建、manual_lock 列已 ALTER，
+        // 但 _pm_migrations 未记 v2/v3（进程在 DDL 与记账之间被杀的残留）。
+        // open 必须补记账自愈，而不是重试 ALTER 报 duplicate column 永久失败
+        let scratch = Scratch::new();
+        let db = scratch.0.join("pm.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            // 真实 v1 schema + 记账（crash 前提：v1 已完整应用）
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _pm_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute_batch(MIGRATIONS[0].1).unwrap();
+            conn.execute(
+                "INSERT INTO _pm_migrations(version, applied_at) VALUES (1, 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("ALTER TABLE items ADD COLUMN manual_lock INTEGER NOT NULL DEFAULT 0;")
+                .unwrap();
+            // crash 点：ALTER 已落盘、v2/v3 未记账
+        }
+
+        let store = PmStore::open(&db).unwrap();
+        // v2 靠 guard 跳过 DDL 只补记账；v3 索引补齐
+        let mut versions: Vec<u32> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT version FROM _pm_migrations")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        versions.sort();
+        assert_eq!(versions, vec![1, 2, 3]);
+        let indexes: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_items_github_ref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1);
+        // 自愈后库可用，老数据行 manual_lock 默认 false
+        let item = store.create_item(&new_item("自愈后可用", None)).unwrap();
+        assert!(!item.manual_lock);
+        assert!(store.get_active_item(&item.id).is_ok());
     }
 
     #[test]
