@@ -24,8 +24,10 @@ import {
 	DEFAULT_STATUSES,
 	EMPTY_FILTER,
 	filterItems,
+	loadPmLocalData,
 	PRIORITIES,
 	PRIORITY_LABELS,
+	pmSyncWithTimeout,
 	repoName,
 } from "./model";
 
@@ -53,26 +55,15 @@ export default function PmPanel({ p }: { p: Project }) {
 	const [columnsOpen, setColumnsOpen] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 
-	const load = useCallback(async () => {
+	/** 只加载本地数据（SQLite 毫秒级）。GitHub 同步不在此处——同步悬挂/失败
+	 * 都不能把看板卡在「正在加载」（#61 的根因就是旧版在此先 await 同步） */
+	const loadLocal = useCallback(async () => {
 		setError("");
-		// 先同步 GitHub 再加载本地数据：无 GitHub provider 的项目跳过；
-		// 同步失败（网络/凭据）只 toast，不阻断本地加载
-		if (p.providerIdentity?.provider === "github") {
-			try {
-				const r = await api.pmSyncGithub(p.id);
-				if (r.created + r.updated + r.moved > 0)
-					toast(
-						`GitHub 同步：新增 ${r.created} · 更新 ${r.updated} · 迁移 ${r.moved}`,
-					);
-			} catch (e) {
-				toast("GitHub 同步失败：" + String(e));
-			}
-		}
 		try {
-			const [items, milestones] = await Promise.all([
-				api.pmListItems(),
-				api.pmListMilestones(),
-			]);
+			const { items, milestones } = await loadPmLocalData({
+				listItems: api.pmListItems,
+				listMilestones: api.pmListMilestones,
+			});
 			setItems(items);
 			setMilestones(milestones);
 		} catch (e) {
@@ -83,14 +74,41 @@ export default function PmPanel({ p }: { p: Project }) {
 		} catch {
 			// 后端 pm_list_statuses 未就绪时回退默认四列
 		}
-	}, [p.id, p.providerIdentity, toast]);
+	}, []);
+
+	/** GitHub 同步后台执行：有变更时静默重载看板，失败/超时只 toast；
+	 * 同步悬挂由 PM_SYNC_TIMEOUT_MS 收敛放弃等待，永不阻断看板（#61） */
+	const syncInBackground = useCallback(() => {
+		void pmSyncWithTimeout(p.id, { syncGithub: api.pmSyncGithub }).then(
+			(outcome) => {
+				if (outcome.kind === "synced") {
+					const { created, updated, moved } = outcome.result;
+					if (created + updated + moved > 0) {
+						toast(
+							`GitHub 同步：新增 ${created} · 更新 ${updated} · 迁移 ${moved}`,
+						);
+						void loadLocal();
+					}
+				} else if (outcome.kind === "failed") {
+					toast("GitHub 同步失败：" + outcome.error);
+				} else {
+					toast("GitHub 同步超时，可稍后手动刷新");
+				}
+			},
+		);
+	}, [p.id, loadLocal, toast]);
+
+	const hasGithub = p.providerIdentity?.provider === "github";
 	useEffect(() => {
-		void load();
-	}, [load]);
+		// 本地数据先行渲染；同步 fire-and-forget，完成/失败/悬挂都不阻塞
+		void loadLocal();
+		if (hasGithub) syncInBackground();
+	}, [loadLocal, syncInBackground, hasGithub]);
 
 	const refresh = async () => {
 		setRefreshing(true);
-		await load();
+		await loadLocal();
+		if (hasGithub) syncInBackground();
 		setRefreshing(false);
 	};
 
@@ -164,7 +182,7 @@ export default function PmPanel({ p }: { p: Project }) {
 				.catch(() => {});
 		} catch (e) {
 			toast("移动失败：" + String(e));
-			await load();
+			await loadLocal();
 		}
 	};
 
@@ -219,7 +237,7 @@ export default function PmPanel({ p }: { p: Project }) {
 	const saveStatuses = async (next: PmStatusDef[]) => {
 		const saved = await api.pmUpdateStatuses(next);
 		setStatuses(saved);
-		await load();
+		await loadLocal();
 		toast("看板列已更新");
 	};
 
@@ -244,7 +262,7 @@ export default function PmPanel({ p }: { p: Project }) {
 			<ResourceState
 				loading={loading && !error}
 				error={error}
-				onRetry={() => void load()}
+				onRetry={() => void loadLocal()}
 				title="加载项目数据"
 			/>
 		);

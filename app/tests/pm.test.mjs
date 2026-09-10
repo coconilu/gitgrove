@@ -10,8 +10,10 @@ import {
 	focusSummary,
 	groupByStatus,
 	issueUrl,
+	loadPmLocalData,
 	milestoneProgress,
 	parseGithubRef,
+	pmSyncWithTimeout,
 	repoName,
 	sortMilestones,
 	todayString,
@@ -225,4 +227,55 @@ test("issueUrl 拼出 issue 链接，解析失败返回 null", () => {
 		"https://github.com/coconilu/gitgrove/issues/57",
 	);
 	assert.equal(issueUrl("bad-ref"), null);
+});
+
+test("sync 悬挂不阻塞本地渲染：假 promise 永不 resolve，本地数据照常加载（#61）", async () => {
+	const hang = () => new Promise(() => {}); // 模拟同步悬挂：永不 settle
+	// 先发起同步（fire-and-forget），不等它
+	const sync = pmSyncWithTimeout("p1", { syncGithub: hang }, 10);
+	// 本地数据加载与悬挂的同步无关，立即返回（PmPanel 先渲染看板的依据）
+	const local = await loadPmLocalData({
+		listItems: async () => [item({ id: "a" })],
+		listMilestones: async () => [],
+	});
+	assert.equal(local.items[0].id, "a");
+	assert.equal(local.milestones.length, 0);
+	// 悬挂的同步由前端超时兜底收敛为 timeout（调用方据此 toast 并放弃本次等待）
+	assert.deepEqual(await sync, { kind: "timeout" });
+});
+
+test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async () => {
+	const failed = await pmSyncWithTimeout(
+		"p1",
+		{
+			syncGithub: async () => {
+				throw new Error("boom");
+			},
+		},
+		10,
+	);
+	assert.deepEqual(failed, { kind: "failed", error: "Error: boom" });
+	const synced = await pmSyncWithTimeout(
+		"p1",
+		{
+			syncGithub: async () => ({ created: 1, updated: 2, moved: 3 }),
+		},
+		10,
+	);
+	assert.deepEqual(synced, {
+		kind: "synced",
+		result: { created: 1, updated: 2, moved: 3 },
+	});
+});
+
+test("loadPmLocalData 任一本地请求失败则上抛（PmPanel 据此进错误态）", async () => {
+	await assert.rejects(
+		loadPmLocalData({
+			listItems: async () => [item({ id: "a" })],
+			listMilestones: async () => {
+				throw new Error("db down");
+			},
+		}),
+		/db down/,
+	);
 });
