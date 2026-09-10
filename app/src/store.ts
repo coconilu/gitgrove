@@ -293,3 +293,68 @@ export const useStore = create<AppState>((set, get) => ({
 }));
 
 export { activeCheckout, findCheckout } from "./navigation";
+
+// —— 资源会话缓存（SWR）——
+// 供 useResource 实现「先显示上次结果，后台刷新再更新」。缓存按资源 key 隔离，
+// key 一律以 projectId 开头，因此数据天然按项目隔离；只存在内存里，重启应用即清空。
+
+export type SwrState<T> = {
+	data: T | null;
+	error: string;
+	loading: boolean; // 没有可显示的数据，正在等待首次加载
+	refreshing: boolean; // 正在显示旧数据，同时后台刷新中
+};
+
+const resourceCache = new Map<string, unknown>();
+// 每个 key 的请求序号：迟到的旧响应不得覆盖新结果，也不得写入缓存
+const resourceRequest = new Map<string, number>();
+
+export function peekSwr<T>(key: string): T | undefined {
+	return resourceCache.has(key) ? (resourceCache.get(key) as T) : undefined;
+}
+
+export function resetSwrCache() {
+	resourceCache.clear();
+	resourceRequest.clear();
+}
+
+export function swrFetch<T>(opts: {
+	key: string;
+	cache: boolean;
+	load: () => Promise<T>;
+	emit: (state: SwrState<T>) => void;
+}): () => void {
+	const cached = opts.cache ? peekSwr<T>(opts.key) : undefined;
+	const initial: SwrState<T> =
+		cached !== undefined
+			? { data: cached, error: "", loading: false, refreshing: true }
+			: { data: null, error: "", loading: true, refreshing: false };
+	opts.emit(initial);
+	const request = (resourceRequest.get(opts.key) ?? 0) + 1;
+	resourceRequest.set(opts.key, request);
+	let cancelled = false;
+	Promise.resolve()
+		.then(opts.load)
+		.then(
+			(data) => {
+				if (resourceRequest.get(opts.key) !== request) return;
+				// 组件已卸载（如切走页签）时仍写入缓存，下次进入可直接显示新结果
+				if (opts.cache) resourceCache.set(opts.key, data);
+				if (!cancelled)
+					opts.emit({ data, error: "", loading: false, refreshing: false });
+			},
+			(error) => {
+				if (resourceRequest.get(opts.key) !== request || cancelled) return;
+				// 刷新失败：保留旧数据，错误交给调用方提示
+				opts.emit({
+					data: initial.data,
+					error: String(error),
+					loading: false,
+					refreshing: false,
+				});
+			},
+		);
+	return () => {
+		cancelled = true;
+	};
+}

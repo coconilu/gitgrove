@@ -499,12 +499,15 @@ function Worktrees({ p }: { p: Project }) {
 function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 	const gh = p.providerIdentity;
 	const s = useStore();
-	const items = useResource<(IssueInfo | PrInfo)[]>(p.id + ":" + kind, () =>
-		!gh
-			? Promise.resolve([])
-			: kind === "issue"
-				? api.listIssues(gh.owner, gh.repo)
-				: api.listPrs(gh.owner, gh.repo),
+	const items = useResource<(IssueInfo | PrInfo)[]>(
+		p.id + ":" + kind,
+		() =>
+			!gh
+				? Promise.resolve([])
+				: kind === "issue"
+					? api.listIssues(gh.owner, gh.repo)
+					: api.listPrs(gh.owner, gh.repo),
+		{ cache: true },
 	);
 	const [filter, setFilter] = useState("open");
 	const [q, setQ] = useState("");
@@ -541,6 +544,7 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 				);
 			return result;
 		},
+		{ cache: true },
 	);
 	useEffect(() => {
 		if (!focus || !items.data) return;
@@ -571,15 +575,25 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 							: "查看变更，进入独立工作树审查。"}
 					</p>
 				</div>
-				<IconButton
-					label={kind === "issue" ? "刷新 Issues" : "刷新 Pull Requests"}
-					icon={RefreshCw}
-					busy={items.loading || checks.loading}
-					onClick={() => {
-						items.reload();
-						checks.reload();
-					}}
-				/>
+				<div className="ops">
+					{(items.refreshing || checks.refreshing) && (
+						<span className="muted">更新中…</span>
+					)}
+					<IconButton
+						label={kind === "issue" ? "刷新 Issues" : "刷新 Pull Requests"}
+						icon={RefreshCw}
+						busy={
+							items.loading ||
+							items.refreshing ||
+							checks.loading ||
+							checks.refreshing
+						}
+						onClick={() => {
+							items.reload();
+							checks.reload();
+						}}
+					/>
+				</div>
 			</div>
 			<div className="list-tools">
 				<input
@@ -612,7 +626,12 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 					{error}
 				</div>
 			)}
-			{items.loading || items.error ? (
+			{items.error && items.data && (
+				<div className="inline-error" role="alert">
+					刷新失败，仍显示上次加载的结果。
+				</div>
+			)}
+			{items.loading || (items.error && !items.data) ? (
 				<ResourceState
 					loading={items.loading}
 					error={items.error}
@@ -752,23 +771,31 @@ function WorkItems({ p, kind }: { p: Project; kind: "issue" | "pr" }) {
 function Actions({ p }: { p: Project }) {
 	const gh = p.providerIdentity;
 	const s = useStore();
-	const workflows = useResource(p.id + ":workflows", () =>
-		gh ? api.listWorkflows(gh.owner, gh.repo) : Promise.resolve([]),
+	const workflows = useResource(
+		p.id + ":workflows",
+		() => (gh ? api.listWorkflows(gh.owner, gh.repo) : Promise.resolve([])),
+		{ cache: true },
 	);
 	const [selected, setSelected] = useState<number | null>(null);
 	const [busy, setBusy] = useState<number | null>(null);
 	const [error, setError] = useState("");
 	const workflow =
 		workflows.data?.find((w) => w.id === selected) ?? workflows.data?.[0];
-	const details = useResource(p.id + ":workflow-details:" + workflow?.id, () =>
-		gh && workflow
-			? api.workflowDetails(gh.owner, gh.repo, workflow.id)
-			: Promise.resolve(null),
+	const details = useResource(
+		p.id + ":workflow-details:" + workflow?.id,
+		() =>
+			gh && workflow
+				? api.workflowDetails(gh.owner, gh.repo, workflow.id)
+				: Promise.resolve(null),
+		{ cache: true },
 	);
-	const runs = useResource(p.id + ":workflow-runs:" + workflow?.id, () =>
-		gh && workflow
-			? api.listRuns(gh.owner, gh.repo, workflow.id)
-			: Promise.resolve([]),
+	const runs = useResource(
+		p.id + ":workflow-runs:" + workflow?.id,
+		() =>
+			gh && workflow
+				? api.listRuns(gh.owner, gh.repo, workflow.id)
+				: Promise.resolve([]),
+		{ cache: true },
 	);
 	if (!gh) return <NoGitHub />;
 	const dispatch = () => {
@@ -833,18 +860,35 @@ function Actions({ p }: { p: Project }) {
 						查看运行结果和日志，按需触发支持手动运行的流程。
 					</p>
 				</div>
-				<IconButton
-					label="刷新 Actions"
-					icon={RefreshCw}
-					busy={workflows.loading || runs.loading || details.loading}
-					onClick={() => {
-						workflows.reload();
-						runs.reload();
-						details.reload();
-					}}
-				/>
+				<div className="ops">
+					{(workflows.refreshing || runs.refreshing || details.refreshing) && (
+						<span className="muted">更新中…</span>
+					)}
+					<IconButton
+						label="刷新 Actions"
+						icon={RefreshCw}
+						busy={
+							workflows.loading ||
+							workflows.refreshing ||
+							runs.loading ||
+							runs.refreshing ||
+							details.loading ||
+							details.refreshing
+						}
+						onClick={() => {
+							workflows.reload();
+							runs.reload();
+							details.reload();
+						}}
+					/>
+				</div>
 			</div>
-			{workflows.loading || workflows.error ? (
+			{workflows.error && workflows.data && (
+				<div className="inline-error" role="alert">
+					刷新失败，仍显示上次加载的结果。
+				</div>
+			)}
+			{workflows.loading || (workflows.error && !workflows.data) ? (
 				<ResourceState
 					loading={workflows.loading}
 					error={workflows.error}
@@ -887,17 +931,19 @@ function Actions({ p }: { p: Project }) {
 								运行流程
 							</button>
 						</div>
-						{details.error ? (
+						{details.error && !details.data ? (
 							<ResourceState error={details.error} onRetry={details.reload} />
 						) : (
 							<p className="muted">
 								{details.loading
 									? "读取运行配置…"
-									: workflow?.state !== "active"
-										? "该流程已停用"
-										: details.data?.dispatch
-											? "默认分支：" + details.data.defaultBranch
-											: "此流程由事件触发，不支持手动运行"}
+									: details.error
+										? "运行配置刷新失败，显示的是上次结果"
+										: workflow?.state !== "active"
+											? "该流程已停用"
+											: details.data?.dispatch
+												? "默认分支：" + details.data.defaultBranch
+												: "此流程由事件触发，不支持手动运行"}
 							</p>
 						)}
 						{error && (
@@ -905,7 +951,12 @@ function Actions({ p }: { p: Project }) {
 								{error}
 							</div>
 						)}
-						{runs.loading || runs.error ? (
+						{runs.error && runs.data && (
+							<div className="inline-error" role="alert">
+								刷新失败，仍显示上次加载的结果。
+							</div>
+						)}
+						{runs.loading || (runs.error && !runs.data) ? (
 							<ResourceState
 								loading={runs.loading}
 								error={runs.error}
