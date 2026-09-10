@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.5（2026-09-10）
+
+- Merge pull request #62 from coconilu/chore/tower-merge-m16-m17
+- Merge branch 'feat/sync-github-61'
+- Merge branch 'feat/swr-issues-pr-actions-60'
+- feat(ui): Issues/PR/Actions 页签缓存先显，SWR 后台刷新 (#60)
+- fix(pm): 看板本地数据先渲染，GitHub 同步后台化 + HTTP 超时兜底 (#61)
+
 ## v1.2.4（2026-09-10）
 
 - Merge pull request #58 from coconilu/chore/tower-merge-m14-m15
