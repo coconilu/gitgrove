@@ -22,20 +22,34 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| format!("keyring 不可用: {e}"))
 }
 
-/// 取 token：内存 → keyring → gh CLI（成功后写回 keyring）
-pub fn ensure_token(state: &AppState) -> Result<String, String> {
+/// 取 token：内存 → keyring（不含 gh CLI 兜底；auth_status 需要区分来源）
+fn stored_token(state: &AppState) -> Option<String> {
     if let Some(t) = state.token.lock().unwrap().clone() {
-        return Ok(t);
+        return Some(t);
     }
     if let Ok(entry) = keyring_entry() {
         if let Ok(t) = entry.get_password() {
             if !t.is_empty() {
                 *state.token.lock().unwrap() = Some(t.clone());
-                return Ok(t);
+                return Some(t);
             }
         }
     }
-    Err("未登录".into())
+    None
+}
+
+/// 取 token：内存 → keyring → gh CLI（成功后写回 keyring）。
+/// gh CLI 兜底必须在这里就有：pm_sync_github 等 command 不保证 auth_status 先行
+/// 运行过（#66 排查记录：keyring 为空时所有命令直接「未登录」失败，即便本机
+/// gh 已登录）；错误文案给出两种补救路径，前端错误横幅直接展示。
+pub fn ensure_token(state: &AppState) -> Result<String, String> {
+    if let Some(t) = stored_token(state) {
+        return Ok(t);
+    }
+    if let Some(t) = try_gh_cli(state) {
+        return Ok(t);
+    }
+    Err("未登录：应用内没有存储的 GitHub token，gh CLI 也未提供（gh auth login 或在应用内登录）".into())
 }
 
 fn try_gh_cli(state: &AppState) -> Option<String> {
@@ -214,21 +228,22 @@ pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, Strin
         *state.has_project_scope.lock().unwrap() = None;
         logged_out()
     };
-    // 内存 / keyring
-    if let Ok(t) = ensure_token(&state) {
+    // 内存 / keyring 的存储 token。失效（过期/被撤销）不能直接判未登录：
+    // keyring 可能残留旧 token，而 gh CLI 往往持有新 token，可救回登录态（#66）
+    if let Some(t) = stored_token(&state) {
         if let Ok(me) = fetch_viewer(&state.http, &t, "keyring").await {
             record(&me);
             return Ok(me);
         }
-        return Ok(out(&state));
+        // 清内存槽，避免遮蔽下面 try_gh_cli 的写回
+        *state.token.lock().unwrap() = None;
     }
-    // gh CLI 兜底
+    // gh CLI 兜底（成功后写回 keyring，之后不依赖 gh 也在）
     if let Some(t) = try_gh_cli(&state) {
         if let Ok(me) = fetch_viewer(&state.http, &t, "gh CLI").await {
             record(&me);
             return Ok(me);
         }
-        return Ok(out(&state));
     }
     Ok(out(&state))
 }
@@ -692,6 +707,50 @@ mod workflow_tests {
         assert_eq!(details.inputs[0].options.len(), 4);
         assert!(details.inputs[0].required);
         assert_eq!(details.inputs[1].default_value, "false");
+    }
+
+    /// 诊断/回归（#66，#[ignore] 本地手动跑）：验证 keyring 里应用存的 token 能被
+    /// 当前构建读出且仍有效（/user 200）。keyring 3 缺 windows-native feature 时
+    /// 静默退化为 mock store——get_password 恒 NoEntry，本测试立即失败。
+    /// 跑法：cargo test diagnostic_keyring_token -- --ignored --nocapture
+    #[test]
+    #[ignore = "诊断用：读真实凭据管理器，只打印有效性不打印 token"]
+    fn diagnostic_keyring_token() {
+        use super::{Http, KEYRING_SERVICE, KEYRING_USER};
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).expect("entry new");
+        match entry.get_password() {
+            Ok(t) => {
+                println!("keyring 读取成功，token 长度 {}", t.len());
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let http = Http::new();
+                let res = rt.block_on(async {
+                    http.send(|c| c.get("https://api.github.com/user").bearer_auth(&t))
+                        .await
+                        .map(|r| r.status().to_string())
+                });
+                println!("token /user 状态: {res:?}");
+                assert!(res.as_ref().map(String::as_str) == Ok("200 OK"), "keyring token 已失效: {res:?}");
+            }
+            Err(e) => panic!("keyring 读取失败: {e}"),
+        }
+    }
+
+    /// #66 回归：ensure_token 内存命中直接返回（不依赖 keyring / gh CLI）。
+    /// mock store 时代 keyring 恒空曾让所有 command 首调「未登录」失败。
+    #[test]
+    fn ensure_token_uses_memory_slot_first() {
+        use super::{ensure_token, AppState, Http};
+        use std::sync::Mutex;
+        let state = AppState {
+            token: Mutex::new(Some("mem-token".into())),
+            http: Http::new(),
+            has_project_scope: Mutex::new(None),
+            projects_v2_cache: Mutex::new(None),
+            pm: Mutex::new(crate::pm::store::PmStore::open_memory()),
+        };
+        assert_eq!(ensure_token(&state).unwrap(), "mem-token");
+        // 内存槽保持不变（ensure_token 不得清空已持有的 token）
+        assert_eq!(state.token.lock().unwrap().as_deref(), Some("mem-token"));
     }
 }
 

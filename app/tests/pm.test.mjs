@@ -16,6 +16,7 @@ import {
 	pmSyncWithTimeout,
 	repoName,
 	sortMilestones,
+	syncBannerFromOutcome,
 	todayString,
 } from "../src/components/pm/model.ts";
 
@@ -277,5 +278,33 @@ test("loadPmLocalData 任一本地请求失败则上抛（PmPanel 据此进错�
 			},
 		}),
 		/db down/,
+	);
+});
+
+test("syncBannerFromOutcome：失败/超时映射为常驻错误横幅（#66 静默吞错回归）", () => {
+	assert.deepEqual(
+		syncBannerFromOutcome({ kind: "failed", error: "未登录：无可用 token" }),
+		{ kind: "error", message: "GitHub 同步失败：未登录：无可用 token" },
+	);
+	assert.deepEqual(syncBannerFromOutcome({ kind: "timeout" }), {
+		kind: "error",
+		message: "GitHub 同步超时，可稍后手动刷新",
+	});
+});
+
+test("syncBannerFromOutcome：有变更提示成功，无变更返回 null", () => {
+	assert.deepEqual(
+		syncBannerFromOutcome({
+			kind: "synced",
+			result: { created: 3, updated: 1, moved: 2 },
+		}),
+		{ kind: "changed", message: "GitHub 同步：新增 3 · 更新 1 · 迁移 2" },
+	);
+	assert.equal(
+		syncBannerFromOutcome({
+			kind: "synced",
+			result: { created: 0, updated: 0, moved: 0 },
+		}),
+		null,
 	);
 });
