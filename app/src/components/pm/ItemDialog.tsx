@@ -99,6 +99,22 @@ export default function ItemDialog({
 				<DialogDescription className="muted">
 					{item ? "保存后写回本地数据库。" : "任务会进入所选看板列。"}
 				</DialogDescription>
+				{item?.githubRef && item.manualLock && (
+					<div className="pm-lock-row">
+						<span className="muted">
+							🔒 已锁定：手动拖动过，同步不再自动迁移列位置。
+						</span>
+						<Button
+							size="sm"
+							disabled={busy}
+							onClick={() =>
+								run(() => onUpdate({ ...item, manualLock: false }))
+							}
+						>
+							解除锁定，恢复自动迁移
+						</Button>
+					</div>
+				)}
 				<div className="pm-form">
 					<label className="pm-field">
 						<span>标题</span>

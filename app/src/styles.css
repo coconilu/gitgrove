@@ -2336,6 +2336,37 @@ button:disabled {
 .pm-prio.p-low {
 	background: var(--faint);
 }
+.pm-gh-ref {
+	border: 1px solid rgba(47, 129, 247, 0.4);
+	border-radius: 999px;
+	padding: 0 7px;
+	color: var(--accent);
+	background: none;
+	font: inherit;
+	line-height: inherit;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.pm-gh-ref:hover {
+	background: rgba(47, 129, 247, 0.15);
+	border-color: var(--accent);
+}
+.pm-lock {
+	display: inline-flex;
+	align-items: center;
+	color: var(--muted);
+}
+.pm-lock-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 6px 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--panel);
+	font-size: 12px;
+}
 .pm-add-card {
 	color: var(--faint);
 	padding: 6px 10px;

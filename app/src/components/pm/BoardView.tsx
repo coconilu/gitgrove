@@ -16,12 +16,17 @@ import {
 	useSortable,
 	verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Lock } from "lucide-react";
 import { useState } from "react";
+import { useStore } from "../../store";
 import type { PmItem, PmMilestoneWithStats, PmStatusDef } from "../../types";
 import {
 	computeMove,
 	dueInfo,
 	groupByStatus,
+	issueUrl,
+	parseGithubRef,
 	repoName,
 	todayString,
 } from "./model";
@@ -195,7 +200,7 @@ function SortableCard({
 	);
 }
 
-/** 卡片内容：标题 + 优先级点 / 里程碑 / 仓库 / 截止日 / 标签 */
+/** 卡片内容：标题 + GitHub 引用徽标 / 锁定标记 / 优先级点 / 里程碑 / 仓库 / 截止日 / 标签 */
 function CardFace({
 	item,
 	milestones,
@@ -207,8 +212,14 @@ function CardFace({
 	dragging?: boolean;
 	onOpen?: () => void;
 }) {
+	const toast = useStore((s) => s.toast);
 	const ms = milestones.find((m) => m.id === item.milestoneId);
 	const due = item.dueDate ? dueInfo(item.dueDate, todayString()) : null;
+	const gref = item.githubRef ? parseGithubRef(item.githubRef) : null;
+	const openIssue = () => {
+		const url = item.githubRef ? issueUrl(item.githubRef) : null;
+		if (url) openUrl(url).catch((e) => toast(String(e)));
+	};
 	return (
 		<article
 			className={"pm-card" + (dragging ? " dragging" : "")}
@@ -225,11 +236,32 @@ function CardFace({
 		>
 			<div className="pm-card-title">{item.title}</div>
 			<div className="pm-card-meta">
+				{gref && (
+					<button
+						className="pm-gh-ref"
+						title={`${item.githubRef} · 在 GitHub 打开`}
+						onPointerDown={(e) => e.stopPropagation()}
+						onClick={(e) => {
+							e.stopPropagation();
+							openIssue();
+						}}
+					>
+						#{gref.number}
+					</button>
+				)}
 				{item.priority !== "none" && (
 					<span
 						className={"pm-prio p-" + item.priority}
 						title={"优先级：" + item.priority}
 					/>
+				)}
+				{item.manualLock && (
+					<span
+						className="pm-lock"
+						title="已锁定：手动拖动过，自动迁移暂停（编辑任务可解除）"
+					>
+						<Lock size={11} aria-hidden />
+					</span>
 				)}
 				{ms && <span className="pm-tag ms">🏁 {ms.title}</span>}
 				{item.repoPath && (
