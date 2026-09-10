@@ -9,10 +9,6 @@ on:
         default: patch
         type: choice
         options: [patch, minor, major, none]
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [master]
   issues:
     types: [closed]
 
@@ -32,6 +28,7 @@ jobs:
       contents: write
       pull-requests: write
       actions: write
+      checks: read
     outputs:
       sha: ${{ steps.prepare.outputs.sha }}
     steps:
@@ -54,13 +51,7 @@ jobs:
       always() && !cancelled() && (
       (github.event_name == 'workflow_dispatch' &&
        (inputs.bump == 'none' || needs.prepare.result == 'success')) ||
-      github.event_name == 'issues' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
-       github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.path == '.github/workflows/ci.yml'))
+      github.event_name == 'issues')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -107,6 +98,17 @@ jobs:
           # 构建与发布固定到同一个通过 CI 的提交
           ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
+
+      # 缓存命名空间 gitgrove-Release-* 与 ci.yml 的 gitgrove-CI-* 互不相通：
+      # check 只产出 rmeta，暖不了这里的完整 release 编译，首次发版冷、
+      # 同 lockfile 的重试与后续发版热
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: gitgrove-${{ github.workflow }}
+          workspaces: app/src-tauri
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5

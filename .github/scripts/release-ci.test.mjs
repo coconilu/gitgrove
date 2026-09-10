@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertVersionFiles } from "./prepare-release.mjs";
+import {
+	assertFastTrackVersionFiles,
+	assertVersionFiles,
+	masterHasGreenCI,
+	mergeWithPRCIFallback,
+} from "./prepare-release.mjs";
 import {
 	completeVersionRelease,
 	dispatchedRun,
@@ -367,4 +372,100 @@ test("重试只能复用预期版本文件，拒绝夹带源码、依赖脚本�
 			),
 		/不一致/,
 	);
+});
+
+test("快速通道判定与 version job 同一标准：最新 check 成功才算绿", async () => {
+	const green = {
+		id: 1,
+		name: "check",
+		app: { id: 15368 },
+		status: "completed",
+		conclusion: "success",
+	};
+	assert.equal(
+		await masterHasGreenCI(
+			async () => ({
+				check_runs: [green, { ...green, id: 2, conclusion: "failure" }],
+			}),
+			sha,
+		),
+		false,
+	);
+	assert.equal(
+		await masterHasGreenCI(async () => ({ check_runs: [green] }), sha),
+		true,
+	);
+	assert.equal(await masterHasGreenCI(async () => ({}), sha), false);
+});
+
+test("快速通道本地校验：版本文件可解析且版本一致", () => {
+	assert.doesNotThrow(() =>
+		assertFastTrackVersionFiles(
+			JSON.stringify({ version: "1.2.5" }),
+			JSON.stringify({ version: "1.2.5" }),
+		),
+	);
+	assert.throws(
+		() =>
+			assertFastTrackVersionFiles(
+				"{oops",
+				JSON.stringify({ version: "1.2.5" }),
+			),
+		/package\.json 不是有效的 JSON/,
+	);
+	assert.throws(
+		() =>
+			assertFastTrackVersionFiles(
+				JSON.stringify({ version: "1.2.5" }),
+				"{oops",
+			),
+		/tauri\.conf\.json 不是有效的 JSON/,
+	);
+	assert.throws(
+		() =>
+			assertFastTrackVersionFiles(
+				JSON.stringify({ version: "1.2.5" }),
+				JSON.stringify({ version: "1.3.0" }),
+			),
+		/版本不一致/,
+	);
+});
+
+test("快速通道合并被 required check 拒绝时回退等待 PR CI；其他拒绝立即停止", async () => {
+	let waits = 0;
+	let merges = 0;
+	const requiredCheckBlock = () => {
+		const error = new Error('Required status check "check" is expected.');
+		error.status = 405;
+		return error;
+	};
+	const retried = mergeWithPRCIFallback({
+		merge: async () => {
+			if (++merges === 1) throw requiredCheckBlock();
+			return mergedSha;
+		},
+		waitForPRCI: async () => {
+			waits++;
+		},
+	});
+	assert.equal(await retried(3, sha), mergedSha);
+	assert.equal(waits, 1);
+	assert.equal(merges, 2);
+	for (const [status, message] of [
+		[405, "not authorized"],
+		[409, "conflict"],
+	]) {
+		await assert.rejects(
+			mergeWithPRCIFallback({
+				merge: async () => {
+					throw Object.assign(new Error(message), { status });
+				},
+				waitForPRCI: async () => {
+					waits++;
+				},
+			})(3, sha),
+			new RegExp(message),
+		);
+	}
+	assert.equal(waits, 1);
 });

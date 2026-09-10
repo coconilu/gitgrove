@@ -8,41 +8,6 @@ import {
 
 const sha = "a".repeat(40);
 const repository = { default_branch: "master", full_name: "owner/repo" };
-const run = {
-	conclusion: "success",
-	event: "push",
-	head_branch: "master",
-	head_repository: { full_name: "owner/repo" },
-	path: ".github/workflows/ci.yml",
-	head_sha: sha,
-};
-test("发布使用已通过 CI 的提交，不使用 workflow_run 上下文的最新主分支 SHA", () => {
-	assert.equal(
-		releaseTarget(
-			"workflow_run",
-			{ repository, workflow_run: run },
-			"b".repeat(40),
-		).sha,
-		sha,
-	);
-});
-for (const patch of [
-	{ conclusion: "failure" },
-	{ event: "pull_request" },
-	{ head_branch: "feature" },
-	{ head_repository: { full_name: "fork/repo" } },
-	{ path: ".github/workflows/other.yml" },
-]) {
-	test("拒绝不受信任或未通过的 CI 来源 " + JSON.stringify(patch), () => {
-		assert.equal(
-			releaseTarget("workflow_run", {
-				repository,
-				workflow_run: { ...run, ...patch },
-			}),
-			null,
-		);
-	});
-}
 test("手动升级版本等待自动准备结果，随后发布合并提交；none 使用触发提交", () => {
 	assert.equal(
 		releaseTarget(
