@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.7（2026-09-11）
+
+- Merge pull request #72 from coconilu/chore/tower-merge-m24
+- Merge branch 'feat/dsh-url-71'
+- fix(agents): dsh 打开改用捕获的认证 URL 并修正复用候选顺序 (#71)
+
 ## v1.2.6（2026-09-10）
 
 - Merge pull request #69 from coconilu/chore/tower-merge-m20-m23
