@@ -227,7 +227,7 @@ export default function PmPanel({ p }: { p: Project }) {
 				.then(setMilestones)
 				.catch(() => {});
 			toast("任务已创建");
-		}, [itemsKey]);
+		}, [itemsKey, milestonesKey]);
 	const updateItem = (item: PmItem) =>
 		runMutate(async () => {
 			const updated = await api.pmUpdateItem(item);
@@ -239,7 +239,7 @@ export default function PmPanel({ p }: { p: Project }) {
 				.then(setMilestones)
 				.catch(() => {});
 			toast("任务已保存");
-		}, [itemsKey]);
+		}, [itemsKey, milestonesKey]);
 	const deleteItem = (item: PmItem) =>
 		runMutate(async () => {
 			await api.pmDeleteItem(item.id);
@@ -249,7 +249,7 @@ export default function PmPanel({ p }: { p: Project }) {
 				.then(setMilestones)
 				.catch(() => {});
 			toast("任务已删除");
-		}, [itemsKey]);
+		}, [itemsKey, milestonesKey]);
 	/** 拖拽流转：乐观更新，服务端返回的权威 order 再回填；作废 + 在途暂扣保证
 	 * 期间的整表刷新不覆盖拖拽中的乐观顺序（#77） */
 	const moveItem = (
@@ -295,7 +295,7 @@ export default function PmPanel({ p }: { p: Project }) {
 				// 失败回滚由 runMutate 结束的 reloadLocal 以数据库为准收口
 				toast("移动失败：" + String(e));
 			}
-		}, [itemsKey]);
+		}, [itemsKey, milestonesKey]);
 
 	// ---- milestone 变更 ----
 	const saveMilestone = (
@@ -351,9 +351,10 @@ export default function PmPanel({ p }: { p: Project }) {
 		runMutate(async () => {
 			const saved = await api.pmUpdateStatuses(next);
 			setStatuses(saved);
-			// 列定义变化影响任务归属，结束后 reloadLocal 整表收口
+			// 列定义变化影响任务归属（删列会把 item 归到第一列，同时改写 items 表），
+			// 结束后 reloadLocal 整表收口
 			toast("看板列已更新");
-		}, [statusesKey]);
+		}, [statusesKey, itemsKey]);
 
 	const filtered = useMemo(
 		() => filterItems(items ?? [], filter),
