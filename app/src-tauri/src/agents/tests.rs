@@ -892,7 +892,7 @@ async fn started_server_drop_kills_the_whole_server_process_tree() {
          $l.Start();Start-Sleep -Seconds 30;$l.Stop()\"\r\n",
     )
     .unwrap();
-    let (port, owned, url) = start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1))
+    let (port, owned, _url) = start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1))
         .await
         .unwrap();
     tokio::net::TcpStream::connect(("127.0.0.1", port))

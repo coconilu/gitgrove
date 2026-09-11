@@ -49,6 +49,12 @@ pub fn linked_issue_numbers(links: &[LinkedWorkItem]) -> HashSet<u64> {
 
 /// 扫文本里的 closes/fixes/resolves 系关键词 + #N（大小写不敏感、词边界，
 /// 对齐 GitHub 收口规则；跨仓 o/r#N 形态不处理——同步按同仓 issue 粒度）
+///
+/// #74：按 char_indices 遍历而非按字节步进——中文 PR 标题/正文下按字节索引
+/// 切片会在多字节字符内部 panic（byte index not a char boundary，async command
+/// 里 panic 即整个同步永不返回）。词边界语义不变：非 ASCII 字符一律视作
+/// 非词字符（与 GitHub \b 对 CJK 的行为一致，"同步closes #12" 照样命中）。
+/// 内层的空白/冒号/#/数字扫描只消费 ASCII 字节，切片必落在字符边界上。
 pub fn parse_close_refs(text: &str) -> Vec<u64> {
     const KEYWORDS: [&str; 9] = [
         "closes", "closed", "close", "fixes", "fixed", "fix", "resolves", "resolved", "resolve",
@@ -56,11 +62,10 @@ pub fn parse_close_refs(text: &str) -> Vec<u64> {
     let lower = text.to_lowercase();
     let bytes = lower.as_bytes();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
+    let mut prev_ascii_alnum = false;
+    for (i, ch) in lower.char_indices() {
         // 只在词首尝试：前一个字符不是字母数字（"unclosed #9" 不会命中 closed）
-        let at_word_start = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
-        if at_word_start {
+        if i == 0 || !prev_ascii_alnum {
             for kw in KEYWORDS {
                 if lower[i..].starts_with(kw) {
                     let end = i + kw.len();
@@ -89,7 +94,7 @@ pub fn parse_close_refs(text: &str) -> Vec<u64> {
                 }
             }
         }
-        i += 1;
+        prev_ascii_alnum = ch.is_ascii_alphanumeric();
     }
     out
 }
@@ -571,6 +576,32 @@ mod tests {
         assert!(parse_close_refs("closing #8").is_empty());
         assert!(parse_close_refs("fixable #6").is_empty());
         assert!(parse_close_refs("fixed the bug without ref").is_empty());
+    }
+
+    /// #74 回归：中文标题/正文按字符遍历不再 panic（曾按字节扫词，多字节字符
+    /// 内部切片直接 panic，同步链路整个崩掉）。词边界语义：CJK 是非词字符，
+    /// 紧邻的关键词照样命中（对齐 GitHub \b 行为）。
+    #[test]
+    fn parse_close_refs_handles_multibyte_text() {
+        // PR #52 真实形状：标题 + 中文开头的 body（曾让 pm_sync_github 必 panic）
+        let pr_text = "chore: release v1.2.3\n同步版本与 CHANGELOG 到 v1.2.3。\n\n本机手动发布自动运行版本提交的 CI，若通过后按分支使用护栏规则合并。";
+        assert!(parse_close_refs(pr_text).is_empty());
+        // 中文紧邻关键词 / 全角标点后跟关键词：词边界成立，正常解析
+        assert_eq!(parse_close_refs("同步修复 Closes #12"), vec![12]);
+        assert_eq!(parse_close_refs("中文 fixes: #7 与 Fixes #9"), vec![7, 9]);
+        assert_eq!(parse_close_refs("修.fixes #3"), vec![3]);
+        assert_eq!(parse_close_refs("修复了问题。resolves #8"), vec![8]);
+        // 关键词后紧跟中文（无空白/冒号分隔）：不解析出编号，与 ASCII 行为一致
+        assert!(parse_close_refs("closes中文 #12").is_empty());
+    }
+
+    /// #74 回归：build_signals 吃真实中文 pr_texts 不 panic 且信号正常
+    #[test]
+    fn build_signals_survives_multibyte_pr_texts() {
+        let s = build_signals(&[], &["chore: release v1.2.3\n同步版本与 CHANGELOG 到 v1.2.3。".into()]);
+        assert!(s.linked_issues.is_empty() && s.pr_referenced.is_empty());
+        let s = build_signals(&[], &["同步版本，closes #5".into()]);
+        assert!(s.pr_referenced.contains(&5));
     }
 
     #[test]
