@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	computeMove,
+	createRefreshGate,
 	DEFAULT_STATUSES,
 	dayDiff,
 	doneStatusId,
@@ -10,7 +11,6 @@ import {
 	focusSummary,
 	groupByStatus,
 	issueUrl,
-	loadPmLocalData,
 	milestoneProgress,
 	parseGithubRef,
 	pmSyncWithTimeout,
@@ -230,19 +230,12 @@ test("issueUrl 拼出 issue 链接，解析失败返回 null", () => {
 	assert.equal(issueUrl("bad-ref"), null);
 });
 
-test("sync 悬挂不阻塞本地渲染：假 promise 永不 resolve，本地数据照常加载（#61）", async () => {
+test("sync 悬挂由前端超时兜底收敛为 timeout，永不阻塞看板（#61）", async () => {
 	const hang = () => new Promise(() => {}); // 模拟同步悬挂：永不 settle
-	// 先发起同步（fire-and-forget），不等它
-	const sync = pmSyncWithTimeout("p1", { syncGithub: hang }, 10);
-	// 本地数据加载与悬挂的同步无关，立即返回（PmPanel 先渲染看板的依据）
-	const local = await loadPmLocalData({
-		listItems: async () => [item({ id: "a" })],
-		listMilestones: async () => [],
+	// 本地数据加载与同步无关（PmPanel 里同步是 fire-and-forget，不参与首屏渲染）
+	assert.deepEqual(await pmSyncWithTimeout("p1", { syncGithub: hang }, 10), {
+		kind: "timeout",
 	});
-	assert.equal(local.items[0].id, "a");
-	assert.equal(local.milestones.length, 0);
-	// 悬挂的同步由前端超时兜底收敛为 timeout（调用方据此 toast 并放弃本次等待）
-	assert.deepEqual(await sync, { kind: "timeout" });
 });
 
 test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async () => {
@@ -269,16 +262,27 @@ test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async (
 	});
 });
 
-test("loadPmLocalData 任一本地请求失败则上抛（PmPanel 据此进错误态）", async () => {
-	await assert.rejects(
-		loadPmLocalData({
-			listItems: async () => [item({ id: "a" })],
-			listMilestones: async () => {
-				throw new Error("db down");
-			},
-		}),
-		/db down/,
-	);
+test("createRefreshGate：无变更在途时刷新直接放行", () => {
+	const gate = createRefreshGate();
+	assert.equal(gate.offer(), true);
+	assert.equal(gate.end(), false); // 未 begin 的 end 幂等
+});
+
+test("createRefreshGate：拖拽在途扣下刷新，出闸后要求重载收口（#77 竞态防护）", () => {
+	const gate = createRefreshGate();
+	gate.begin(); // 乐观移动开始
+	assert.equal(gate.offer(), false); // 后台刷新到达 → 扣下，不覆盖乐观顺序
+	assert.equal(gate.offer(), false); // 再来的刷新同样扣下（仅记「有被扣」）
+	gate.begin(); // 嵌套：拖拽中追加的 manualLock 请求
+	assert.equal(gate.end(), false); // 计数未归零，不算结束
+	assert.equal(gate.end(), true); // 归零：期间有被扣的刷新 → 调用方重载收口
+	assert.equal(gate.offer(), true); // 出闸后恢复放行
+});
+
+test("createRefreshGate：变更期间无刷新到达则结束不触发重载", () => {
+	const gate = createRefreshGate();
+	gate.begin();
+	assert.equal(gate.end(), false); // 没扣下过任何刷新，本地状态已是权威
 });
 
 test("syncBannerFromOutcome：失败/超时映射为常驻错误横幅（#66 静默吞错回归）", () => {

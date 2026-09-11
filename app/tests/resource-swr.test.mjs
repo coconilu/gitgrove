@@ -6,7 +6,9 @@ import test from "node:test";
 // node 直接加载需要这个小钩子补 .ts 扩展名。
 register("./ts-resolution-loader.mjs", import.meta.url);
 
-const { peekSwr, resetSwrCache, swrFetch } = await import("../src/store.ts");
+const { peekSwr, pokeSwr, resetSwrCache, swrFetch } = await import(
+	"../src/store.ts"
+);
 
 const deferred = () => {
 	let resolve;
@@ -202,4 +204,30 @@ test("cache: false 不读也不写缓存", async () => {
 		loading: false,
 		refreshing: false,
 	});
+});
+
+test("pokeSwr 写入缓存：后续请求命中先显，刷新成功后覆盖", async () => {
+	resetSwrCache();
+	// 本地乐观变更（如拖拽回填）直接进缓存
+	pokeSwr("p5:pm:items", [{ id: "local" }]);
+	const gate = deferred();
+	const states = [];
+	swrFetch({
+		key: "p5:pm:items",
+		cache: true,
+		load: () => gate.promise,
+		emit: (state) => states.push(state),
+	});
+	// 立即显示乐观变更后的内容，不进入 loading
+	assert.deepEqual(states, [
+		{
+			data: [{ id: "local" }],
+			error: "",
+			loading: false,
+			refreshing: true,
+		},
+	]);
+	gate.resolve([{ id: "server" }]);
+	await flush();
+	assert.deepEqual(peekSwr("p5:pm:items"), [{ id: "server" }]);
 });

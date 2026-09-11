@@ -313,6 +313,12 @@ export function peekSwr<T>(key: string): T | undefined {
 	return resourceCache.has(key) ? (resourceCache.get(key) as T) : undefined;
 }
 
+/** 乐观变更写入缓存（swrFetch 的写路径）：拖拽/新建等尚未重新拉取的本地状态
+ * 也进缓存，切走页签再回来时立即看到最新内容，而不是上一次拉取的旧快照 */
+export function pokeSwr<T>(key: string, value: T) {
+	resourceCache.set(key, value);
+}
+
 export function resetSwrCache() {
 	resourceCache.clear();
 	resourceRequest.clear();
