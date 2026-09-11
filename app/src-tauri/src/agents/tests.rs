@@ -661,10 +661,15 @@ async fn dsh_start_reports_ready_only_after_tcp_port_serves() {
          $l.Start();Start-Sleep -Seconds 10;$l.Stop()\"\r\n",
     )
     .unwrap();
-    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    // URL 捕获窗口测试用 1s：静默桩不打印 URL，就绪后到窗口即回退裸地址。
+    let (port, owned, url) = start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1))
+        .await
+        .unwrap();
     tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .unwrap();
+    // 静默桩不打印任何 URL：就绪路径必须在捕获窗口结束时回退裸地址。
+    assert_eq!(url, None);
     drop(owned);
 }
 
@@ -673,11 +678,117 @@ async fn dsh_start_fails_fast_when_process_exits_without_serving() {
     let scratch = Scratch::new();
     let stub = scratch.0.join("dsh.cmd");
     std::fs::write(&stub, "@echo off\r\nexit /b 3\r\n").unwrap();
-    let error = match start_dsh(&stub, Duration::from_secs(30)).await {
+    let error = match start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1)).await {
         Ok(_) => panic!("an exiting stub must never be reported ready"),
         Err(error) => error,
     };
     assert!(error.contains("退出"));
+}
+
+#[tokio::test]
+async fn start_dsh_captures_authenticated_url_from_stdout() {
+    let scratch = Scratch::new();
+    let stub = scratch.0.join("dsh.cmd");
+    // %5 即 start_dsh 传给 dsh 的端口参数。桩按 dsh 真实输出格式（
+    // packages/bundle/web-app/src/index.ts：`dsh web: <url> (LAN: <url>)`）
+    // 先打印再监听，验证 stdout 捕获贯通 cmd 桩，且选中回环地址而非同行的
+    // LAN 地址（#71：裸地址必被认证栅栏挡下，必须开 dsh 自己打印的 URL）。
+    std::fs::write(
+        &stub,
+        "@echo off\r\n\
+         echo dsh web: http://127.0.0.1:%5/?token=stub-token (LAN: http://192.0.2.10:%5/?token=stub-token)\r\n\
+         powershell -NoProfile -NonInteractive -Command \"$l=\
+         [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,%5);\
+         $l.Start();Start-Sleep -Seconds 10;$l.Stop()\"\r\n",
+    )
+    .unwrap();
+    let (port, owned, url) = start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        url.as_deref(),
+        Some(format!("http://127.0.0.1:{port}/?token=stub-token").as_str())
+    );
+    drop(owned);
+}
+
+#[test]
+fn dsh_output_url_extraction_matches_only_this_instance() {
+    // 真实输出形状：`dsh web: <loopback URL> (LAN: <LAN URL>)`，取回环候选。
+    assert_eq!(
+        pick_dsh_url(
+            &[ "dsh web: http://127.0.0.1:41207/?token=abc (LAN: http://192.0.2.10:41207/?token=abc)".to_string()],
+            41207
+        ),
+        Some("http://127.0.0.1:41207/?token=abc".to_string())
+    );
+    // 无关链接（文档地址）出现在前面也不误开：仍选端口匹配的本实例行。
+    let noisy = [
+        "warning: docs moved to https://example.com/guide, see the release notes.".to_string(),
+        "dsh web: http://127.0.0.1:41207/?token=abc".to_string(),
+    ];
+    assert_eq!(
+        pick_dsh_url(&noisy, 41207),
+        Some("http://127.0.0.1:41207/?token=abc".to_string())
+    );
+    assert_eq!(pick_dsh_url(&noisy, 41208), None);
+    // 端口匹配但只有 LAN 地址：仍指向本实例，可采纳。
+    assert_eq!(
+        pick_dsh_url(
+            &["dsh web (LAN: http://192.0.2.10:41207/?token=abc)".to_string()],
+            41207
+        ),
+        Some("http://192.0.2.10:41207/?token=abc".to_string())
+    );
+    // 宽松边界：引号包裹、结尾标点、行首缩进。
+    assert_eq!(
+        pick_dsh_url(
+            &[r#"  see "http://127.0.0.1:41207/?token=abc." for details"#.to_string()],
+            41207
+        ),
+        Some("http://127.0.0.1:41207/?token=abc".to_string())
+    );
+    // 非 URL 片段与空输入不产生候选。
+    assert_eq!(
+        pick_dsh_url(&["http".to_string(), "https-not-a-url".to_string()], 41207),
+        None
+    );
+    assert_eq!(pick_dsh_url(&[], 41207), None);
+}
+
+#[test]
+fn dsh_reuse_candidates_put_default_port_before_history() {
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    dsh_record_port(&record, 54964);
+    dsh_record_port(&record, 60001);
+    // 默认端口在前：用户手动实例的浏览器会话通常已有认证 cookie，必须优先
+    // 复用，不能被 token 已不可得的遗留记录遮蔽（#71：:3080 在手却打开
+    // 54964 遗留实例的认证页）。历史记录本身最近优先。
+    assert_eq!(dsh_reuse_candidates(&record), vec![3080, 60001, 54964]);
+    // 历史记录里出现默认端口时去重。
+    dsh_record_port(&record, 3080);
+    assert_eq!(dsh_reuse_candidates(&record), vec![3080, 60001, 54964]);
+    // 记录损坏时至少仍有默认端口。
+    std::fs::write(&record, "not-json").unwrap();
+    assert_eq!(dsh_reuse_candidates(&record), vec![3080]);
+}
+
+#[tokio::test]
+async fn dsh_first_live_port_finds_a_listener_on_the_default_port() {
+    // #71 真实场景回归：默认端口上已有监听（用户手动 dsh web）时，TCP 探测
+    // 必须命中。本机空闲则自建 listener 占住 3080；已被占（如开发机上正在
+    // 运行的真实 dsh web）则直接探测现役监听。
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DSH_DEFAULT_PORT)).await {
+        Ok(listener) => Some(listener),
+        Err(_) => None,
+    };
+    assert_eq!(
+        dsh_first_live_port(vec![DSH_DEFAULT_PORT]).await,
+        Some(DSH_DEFAULT_PORT),
+        "a live listener on the default port must be probed hit"
+    );
+    drop(listener);
 }
 
 #[test]
@@ -781,7 +892,9 @@ async fn started_server_drop_kills_the_whole_server_process_tree() {
          $l.Start();Start-Sleep -Seconds 30;$l.Stop()\"\r\n",
     )
     .unwrap();
-    let (port, owned) = start_dsh(&stub, Duration::from_secs(30)).await.unwrap();
+    let (port, owned, url) = start_dsh(&stub, Duration::from_secs(30), Duration::from_secs(1))
+        .await
+        .unwrap();
     tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .unwrap();
