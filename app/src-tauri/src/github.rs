@@ -1,5 +1,10 @@
 // GitHub API：token 只在 Rust 侧；仓库列表用 GraphQL 聚合，其余 REST
 
+use std::io::Read as _;
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -52,11 +57,90 @@ pub fn ensure_token(state: &AppState) -> Result<String, String> {
     Err("未登录：应用内没有存储的 GitHub token，gh CLI 也未提供（gh auth login 或在应用内登录）".into())
 }
 
-fn try_gh_cli(state: &AppState) -> Option<String> {
-    let out = crate::git::new_cmd("gh")
-        .args(["auth", "token"])
-        .output()
+/// gh CLI 兜底取 token 的总等待上限。#74：try_gh_cli 曾用 Command::output()
+/// 无界阻塞，是同步链路（pm_sync_github → ensure_token）唯一的无界等待点——
+/// 用户机上 gh 卡住（凭据助手挂起、杀软扫描等）时，看板同步就永远等不到结果。
+/// `gh auth token` 正常耗时可忽略（实测 ~0.1s），5s 足以覆盖慢盘等合理抖动。
+const GH_CLI_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// spawn 命令并至多等待 `timeout`：正常退出返回 Some(Output)，超时或状态未知
+/// 时杀掉进程树返回 None。#74：这是 try_gh_cli 从 Command::output() 无界阻塞
+/// 改出来的有界版本；保持同步签名，因为 ensure_token 的调用方分布在
+/// projects.rs / pm 等非 async 上下文里，async 化超出本仓改动范围。
+/// stdout/stderr 各由独立线程排空（进程终止后管道 EOF，线程随即结束），
+/// 避免大输出塞满管道把子进程卡死在 write 上；stdin 置空让交互式提示立即
+/// 失败而不是无限等待。
+fn run_bounded(mut cmd: Command, timeout: Duration) -> Option<Output> {
+    let started = Instant::now();
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .ok()?;
+    let (tx_out, rx_out) = mpsc::channel();
+    let mut stdout = child.stdout.take()?;
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        let _ = tx_out.send(buf);
+    });
+    let (tx_err, rx_err) = mpsc::channel();
+    let mut stderr = child.stderr.take()?;
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        let _ = tx_err.send(buf);
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= started + timeout => break None,
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => break None, // 状态未知：按失败处理（不敢按 PID 清树）
+        }
+    };
+    let Some(status) = status else {
+        kill_tree_bounded(&mut child);
+        return None;
+    };
+    // 进程已退出，管道随之关闭，1s 只是防极端残留的兜底
+    Some(Output {
+        status,
+        stdout: rx_out.recv_timeout(Duration::from_secs(1)).unwrap_or_default(),
+        stderr: rx_err.recv_timeout(Duration::from_secs(1)).unwrap_or_default(),
+    })
+}
+
+/// 超时清理：仅当子进程确认仍存活时才按 PID 清理进程树（对齐 agents.rs
+/// StartedServer::tree_cleanup_allowed——已回收或状态未知时 PID 可能已被 OS
+/// 复用，taskkill 会误杀无关进程树），再 kill + wait 收尸；返回是否执行了强杀。
+fn kill_tree_bounded(child: &mut std::process::Child) -> bool {
+    if !matches!(child.try_wait(), Ok(None)) {
+        return false;
+    }
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let taskkill = std::path::PathBuf::from(root).join("System32/taskkill.exe");
+        let _ = crate::git::new_cmd(&taskkill.to_string_lossy())
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill(); // 句柄级兜底（不依赖 PID，无复用风险）
+    let _ = child.wait();
+    true
+}
+
+/// gh CLI 兜底取 token。#74：走 run_bounded 有界等待（GH_CLI_TIMEOUT），
+/// 超时按失败处理返回 None，ensure_token 随即报「未登录」，前端横幅可展示，
+/// 同步不再被挂死的 gh 进程无限拖住。
+fn try_gh_cli(state: &AppState) -> Option<String> {
+    let mut cmd = crate::git::new_cmd("gh");
+    cmd.args(["auth", "token"]);
+    let out = run_bounded(cmd, GH_CLI_TIMEOUT)?;
     if !out.status.success() {
         return None;
     }
@@ -695,6 +779,7 @@ pub async fn workflow_details(state: State<'_, AppState>, owner: String, repo: S
 #[cfg(test)]
 mod workflow_tests {
     use super::parse_workflow_details;
+    use std::process::Command;
     #[test]
     fn supports_all_dispatch_forms_and_preserves_defaults() {
         for source in ["on: workflow_dispatch", "on: [push, workflow_dispatch]", "on:\n  workflow_dispatch:", "'on':\n  workflow_dispatch:"] {
@@ -751,6 +836,160 @@ mod workflow_tests {
         assert_eq!(ensure_token(&state).unwrap(), "mem-token");
         // 内存槽保持不变（ensure_token 不得清空已持有的 token）
         assert_eq!(state.token.lock().unwrap().as_deref(), Some("mem-token"));
+    }
+
+    /// 跨平台测试命令：正常退出并回显一行文本
+    #[cfg(windows)]
+    fn echo_command() -> Command {
+        let mut c = crate::git::new_cmd("cmd");
+        c.args(["/c", "echo", "run_bounded_ok"]);
+        c
+    }
+    #[cfg(not(windows))]
+    fn echo_command() -> Command {
+        let mut c = crate::git::new_cmd("echo");
+        c.arg("run_bounded_ok");
+        c
+    }
+
+    /// 跨平台测试命令：挂死 ~30s（远超测试时限），靠 run_bounded 杀掉收敛
+    #[cfg(windows)]
+    fn hang_command() -> Command {
+        // ping 回环 30 次（~29s）：无外部网络依赖，Windows 自带
+        let mut c = crate::git::new_cmd("ping");
+        c.args(["-n", "30", "127.0.0.1"]);
+        c
+    }
+    #[cfg(not(windows))]
+    fn hang_command() -> Command {
+        let mut c = crate::git::new_cmd("sleep");
+        c.arg("30");
+        c
+    }
+
+    /// #74 回归：挂死的子进程必须在时限内收敛（杀进程树 + 返回 None），
+    /// 而不是像旧的 Command::output() 那样无界等待。
+    #[test]
+    fn run_bounded_kills_hanging_process_in_time() {
+        use super::run_bounded;
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let out = run_bounded(hang_command(), Duration::from_millis(500));
+        let elapsed = started.elapsed();
+        assert!(out.is_none(), "挂死进程应超时返回 None，实际 {out:?}");
+        assert!(elapsed >= Duration::from_millis(500), "应至少等满时限: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(10), "超时后必须杀进程收敛，不得等它自然退出: {elapsed:?}");
+    }
+
+    /// 快路径不受有界等待影响：正常退出的命令完整返回 stdout/退出码
+    #[test]
+    fn run_bounded_returns_output_of_quick_process() {
+        use super::run_bounded;
+        use std::time::Duration;
+        let out = run_bounded(echo_command(), Duration::from_secs(10)).expect("正常命令应返回 Some");
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("run_bounded_ok"));
+    }
+
+    /// 对已回收的子进程不得按 PID 强杀——PID 可能已被 OS 复用，taskkill 会
+    /// 误杀无关进程树（对齐 agents.rs StartedServer::tree_cleanup_allowed 的守卫）
+    #[test]
+    fn kill_tree_bounded_skips_reaped_child() {
+        use super::kill_tree_bounded;
+        let mut child = echo_command().spawn().unwrap();
+        let _ = child.wait(); // 已退出并回收
+        assert!(!kill_tree_bounded(&mut child), "已退出的进程不得触发按 PID 强杀");
+    }
+
+    /// #74 诊断（#[ignore]，本地手动跑）：逐阶段计时复刻 pm_sync_github 的
+    /// 后端链路，定位「GitHub 同步超时」横幅的耗时来源。本机凭据管理器没有
+    /// gh-projects 条目时，走的正是用户机同款「keyring 空 → gh CLI 兜底」路径。
+    /// 跑法：cargo test diagnostic_sync_phase_timing -- --ignored --nocapture
+    #[test]
+    #[ignore = "诊断用：依赖本机凭据 / gh CLI 与 GitHub 连通性"]
+    fn diagnostic_sync_phase_timing() {
+        use super::{
+            GH_CLI_TIMEOUT, AppState, Http, ensure_token, fetch_issues_for_sync,
+            fetch_open_prs_for_sync, keyring_entry, stored_token, try_gh_cli,
+        };
+        use crate::pm::store::{PmStore, now_ts};
+        use crate::pm::sync::{GithubIssueSnapshot, build_signals, recent_issues};
+        use std::sync::Mutex;
+        use std::time::Instant;
+        let mk_state = || AppState {
+            token: Mutex::new(None),
+            http: Http::new(),
+            has_project_scope: Mutex::new(None),
+            projects_v2_cache: Mutex::new(None),
+            pm: Mutex::new(PmStore::open_memory()),
+        };
+
+        let state = mk_state();
+        let t = Instant::now();
+        let stored = stored_token(&state);
+        println!("[1] stored_token（内存→keyring）: {:?}，命中={}", t.elapsed(), stored.is_some());
+        // try_gh_cli 成功会把 token 写回 keyring；开始时若为空则事后还原，
+        // 保证重复跑诊断始终走 gh CLI 路径
+        let keyring_was_empty = stored.is_none();
+        let restore_keyring = || {
+            if keyring_was_empty {
+                if let Ok(entry) = keyring_entry() {
+                    let _ = entry.delete_credential();
+                }
+            }
+        };
+
+        let state = mk_state();
+        let t = Instant::now();
+        let gh = try_gh_cli(&state);
+        println!("[2] try_gh_cli（gh auth token，上限 {GH_CLI_TIMEOUT:?}）: {:?}，成功={}", t.elapsed(), gh.is_some());
+        restore_keyring();
+
+        let state = mk_state();
+        let t = Instant::now();
+        let token = ensure_token(&state);
+        println!("[3] ensure_token 总计: {:?}，成功={}", t.elapsed(), token.is_ok());
+        let token = token.expect("本机应能取到 token（keyring 或 gh CLI），否则无法继续计时");
+
+        // pm_sync_github 同款：issues 首页与 open PR 并行拉取
+        let (issues, prs) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let t = Instant::now();
+            let issues = fetch_issues_for_sync(&state.http, &token, "coconilu", "gitgrove").await;
+            println!("[4] fetch_issues_for_sync: {:?}，成功={}，条数={}", t.elapsed(), issues.is_ok(), issues.as_ref().map(Vec::len).unwrap_or(0));
+            let t = Instant::now();
+            let prs = fetch_open_prs_for_sync(&state.http, &token, "coconilu", "gitgrove").await;
+            println!("[5] fetch_open_prs_for_sync: {:?}，成功={}，条数={}", t.elapsed(), prs.is_ok(), prs.as_ref().map(Vec::len).unwrap_or(0));
+            (issues, prs)
+        });
+        let issues = issues.expect("fetch issues 失败");
+        let prs = prs.expect("fetch PRs 失败");
+
+        let pr_texts: Vec<String> = prs
+            .iter()
+            .map(|p| format!("{}\n{}", p.title, p.body.as_deref().unwrap_or_default()))
+            .collect();
+        // pm_sync_github 会把 PR 标题+正文送进 parse_close_refs；该函数在
+        // pm/sync.rs（越出本 mission 的文件范围）按字节扫词、遇非 ASCII 文本
+        // 会 panic（#74 用户机常驻超时横幅的实际根因之一，已单独上报）。
+        // 这里捕获住让计时跑完 [6]，upsert 阶段用空信号兜底。
+        let signals = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_signals(&[], &pr_texts))) {
+            Ok(s) => s,
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "unknown panic".into());
+                println!("[!] build_signals panic（已知越界 bug：pm/sync.rs parse_close_refs 遇非 ASCII 文本 panic，已单独上报）: {msg}");
+                build_signals(&[], &[])
+            }
+        };
+        let snapshots = recent_issues(issues.into_iter().map(GithubIssueSnapshot::from).collect(), now_ts());
+        let t = Instant::now();
+        let r = state.pm.lock().unwrap().sync_github("coconilu", "gitgrove", &snapshots, &signals);
+        println!("[6] recent_issues + sync_github（upsert {} 条）: {:?}，结果={:?}", snapshots.len(), t.elapsed(), r.as_ref().map(|x| (x.created, x.updated, x.moved)));
+        r.expect("sync_github 失败");
+        restore_keyring();
     }
 }
 
