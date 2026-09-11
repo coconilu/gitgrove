@@ -237,39 +237,6 @@ export function computeMove(
  * keyring 等无法覆盖的悬挂——超时后放弃等待当次同步，看板不受影响 */
 export const PM_SYNC_TIMEOUT_MS = 15_000;
 
-/**
- * 后台刷新与本地乐观变更的竞态闸门（#77）：
- * 拖拽的乐观更新已改本地顺序、服务端尚未回填时，到达的整表刷新（SWR 后台
- * 刷新 / 同步后重载）一律扣下不应用，避免拖动中的卡片被弹回旧位置；
- * begin/end 配对归零后若扣下过刷新，调用方重新拉取本地数据收口。
- */
-export function createRefreshGate() {
-	let depth = 0;
-	let held = false;
-	return {
-		/** 乐观变更开始；可嵌套计数（如拖拽中追加的 manualLock 请求） */
-		begin(): void {
-			depth++;
-		},
-		/** 乐观变更结束：期间有刷新被扣下则返回 true（调用方重载收口） */
-		end(): boolean {
-			depth = Math.max(0, depth - 1);
-			if (depth > 0) return false;
-			const had = held;
-			held = false;
-			return had;
-		},
-		/** 刷新结果到达：true 立即应用；false 表示变更进行中，已扣下 */
-		offer(): boolean {
-			if (depth > 0) {
-				held = true;
-				return false;
-			}
-			return true;
-		},
-	};
-}
-
 export interface PmSyncDeps {
 	syncGithub(projectId: string): Promise<PmSyncResult>;
 }

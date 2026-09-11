@@ -6,9 +6,8 @@ import test from "node:test";
 // node 直接加载需要这个小钩子补 .ts 扩展名。
 register("./ts-resolution-loader.mjs", import.meta.url);
 
-const { peekSwr, pokeSwr, resetSwrCache, swrFetch } = await import(
-	"../src/store.ts"
-);
+const { invalidateSwr, peekSwr, pokeSwr, resetSwrCache, swrFetch } =
+	await import("../src/store.ts");
 
 const deferred = () => {
 	let resolve;
@@ -230,4 +229,53 @@ test("pokeSwr 写入缓存：后续请求命中先显，刷新成功后覆盖", 
 	gate.resolve([{ id: "server" }]);
 	await flush();
 	assert.deepEqual(peekSwr("p5:pm:items"), [{ id: "server" }]);
+});
+
+test("invalidateSwr：在途请求作废——迟到响应不通知、不写缓存", async () => {
+	resetSwrCache();
+	const gate = deferred();
+	const states = [];
+	swrFetch({
+		key: "p6:pm:items",
+		cache: true,
+		load: () => gate.promise,
+		emit: (state) => states.push(state),
+	});
+	invalidateSwr("p6:pm:items"); // 本地乐观变更开始时作废变更前的旧读
+	gate.resolve(["stale"]);
+	await flush();
+	// 只有 initial 一条通知；旧响应既不落地也不进缓存
+	assert.deepEqual(states, [
+		{ data: null, error: "", loading: true, refreshing: false },
+	]);
+	assert.equal(peekSwr("p6:pm:items"), undefined);
+});
+
+test("invalidateSwr 之后的新请求正常工作（序号连续）", async () => {
+	resetSwrCache();
+	const stale = deferred();
+	const fresh = deferred();
+	swrFetch({
+		key: "p7:pm:items",
+		cache: true,
+		load: () => stale.promise,
+		emit: () => {},
+	});
+	invalidateSwr("p7:pm:items");
+	const states = [];
+	swrFetch({
+		key: "p7:pm:items",
+		cache: true,
+		load: () => fresh.promise,
+		emit: (state) => states.push(state),
+	});
+	stale.resolve(["old"]); // 变更前发出的旧读：迟到即作废
+	await flush();
+	fresh.resolve(["new"]);
+	await flush();
+	assert.deepEqual(states, [
+		{ data: null, error: "", loading: true, refreshing: false },
+		{ data: ["new"], error: "", loading: false, refreshing: false },
+	]);
+	assert.deepEqual(peekSwr("p7:pm:items"), ["new"]);
 });

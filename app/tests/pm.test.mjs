@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	computeMove,
-	createRefreshGate,
 	DEFAULT_STATUSES,
 	dayDiff,
 	doneStatusId,
@@ -260,29 +259,6 @@ test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async (
 		kind: "synced",
 		result: { created: 1, updated: 2, moved: 3 },
 	});
-});
-
-test("createRefreshGate：无变更在途时刷新直接放行", () => {
-	const gate = createRefreshGate();
-	assert.equal(gate.offer(), true);
-	assert.equal(gate.end(), false); // 未 begin 的 end 幂等
-});
-
-test("createRefreshGate：拖拽在途扣下刷新，出闸后要求重载收口（#77 竞态防护）", () => {
-	const gate = createRefreshGate();
-	gate.begin(); // 乐观移动开始
-	assert.equal(gate.offer(), false); // 后台刷新到达 → 扣下，不覆盖乐观顺序
-	assert.equal(gate.offer(), false); // 再来的刷新同样扣下（仅记「有被扣」）
-	gate.begin(); // 嵌套：拖拽中追加的 manualLock 请求
-	assert.equal(gate.end(), false); // 计数未归零，不算结束
-	assert.equal(gate.end(), true); // 归零：期间有被扣的刷新 → 调用方重载收口
-	assert.equal(gate.offer(), true); // 出闸后恢复放行
-});
-
-test("createRefreshGate：变更期间无刷新到达则结束不触发重载", () => {
-	const gate = createRefreshGate();
-	gate.begin();
-	assert.equal(gate.end(), false); // 没扣下过任何刷新，本地状态已是权威
 });
 
 test("syncBannerFromOutcome：失败/超时映射为常驻错误横幅（#66 静默吞错回归）", () => {

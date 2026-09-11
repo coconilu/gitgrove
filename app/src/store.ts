@@ -319,6 +319,13 @@ export function pokeSwr<T>(key: string, value: T) {
 	resourceCache.set(key, value);
 }
 
+/** 使某 key 的在途请求作废（请求序号 +1）：其迟到响应既不通知调用方也不写缓存，
+ * 只影响该 key 之后发起的新请求序号。本地乐观变更开始时调用，防止变更前发出的
+ * 旧读在变更结束后落地、覆盖乐观状态（判定按「请求发出时刻」而非「到达时刻」） */
+export function invalidateSwr(key: string) {
+	resourceRequest.set(key, (resourceRequest.get(key) ?? 0) + 1);
+}
+
 export function resetSwrCache() {
 	resourceCache.clear();
 	resourceRequest.clear();

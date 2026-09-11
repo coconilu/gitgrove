@@ -2,6 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../../api";
 import {
+	invalidateSwr,
 	peekSwr,
 	pokeSwr,
 	type SwrState,
@@ -27,7 +28,6 @@ import MilestoneDialog from "./MilestoneDialog";
 import MilestoneView from "./MilestoneView";
 import {
 	type BoardFilter,
-	createRefreshGate,
 	DEFAULT_STATUSES,
 	EMPTY_FILTER,
 	filterItems,
@@ -88,10 +88,16 @@ export default function PmPanel({ p }: { p: Project }) {
 	const toast = useStore((s) => s.toast);
 	const openDialog = useStore((s) => s.openDialog);
 	const [view, setView] = useState<PmView>("board");
-	const [statuses, setStatuses] = useState<PmStatusDef[]>(DEFAULT_STATUSES);
-	const [items, setItems] = useState<PmItem[] | null>(null);
+	// 初始 state 直接从模块级缓存播种：缓存命中时首个 commit 就是数据，
+	// 不再先画一帧整屏 loading（PmPanel 随项目/页签重挂载，播种即最新快照）
+	const [items, setItems] = useState<PmItem[] | null>(
+		() => peekSwr<PmItem[]>(p.id + ":pm:items") ?? null,
+	);
 	const [milestones, setMilestones] = useState<PmMilestoneWithStats[] | null>(
-		null,
+		() => peekSwr<PmMilestoneWithStats[]>(p.id + ":pm:milestones") ?? null,
+	);
+	const [statuses, setStatuses] = useState<PmStatusDef[]>(
+		() => peekSwr<PmStatusDef[]>(p.id + ":pm:statuses") ?? DEFAULT_STATUSES,
 	);
 	const [filter, setFilter] = useState<BoardFilter>(EMPTY_FILTER);
 	const [itemDialog, setItemDialog] = useState<{
@@ -107,13 +113,14 @@ export default function PmPanel({ p }: { p: Project }) {
 	const [syncBanner, setSyncBanner] = useState<PmSyncBanner | null>(null);
 	// SWR 整表重载代际：手动刷新 / 同步变更后 / 错误重试共用一个信号
 	const [revision, setRevision] = useState(0);
-	/** 拖拽乐观更新与后台刷新的竞态闸门（#77） */
-	const gateRef = useRef(createRefreshGate());
+	/** 本地乐观变更在途深度：>0 时到达的整表 items 刷新一律不落状态。
+	 * 变更开始时已 invalidateSwr 作废在途请求，这里兜底拦住入闸后才发出的读 */
+	const mutatingRef = useRef(0);
 	const reloadLocal = useCallback(() => setRevision((n) => n + 1), []);
 
-	// 整表刷新结果经闸门落状态：拖拽进行中扣下，出闸后由调用方重载收口
+	// 整表刷新结果落状态：变更在途时不应用，出闸后的 reloadLocal 以 DB 收口
 	const applyItems = useCallback((data: PmItem[]) => {
-		if (gateRef.current.offer()) setItems(data);
+		if (mutatingRef.current === 0) setItems(data);
 	}, []);
 	const applyMilestones = useCallback(
 		(data: PmMilestoneWithStats[]) => setMilestones(data),
@@ -153,27 +160,17 @@ export default function PmPanel({ p }: { p: Project }) {
 		revision,
 	);
 
-	// 本地乐观变更镜像进模块级缓存：切走页签再回来立即看到最新内容（含未同步变更）。
-	// key 归属校验防止切项目瞬间的旧数据写进新项目的缓存键
+	// 本地乐观变更镜像进模块级缓存：切走页签再回来立即看到最新内容（含未同步变更）
 	useEffect(() => {
-		if (itemsStatus.key === p.id + ":pm:items" && items)
-			pokeSwr(p.id + ":pm:items", items);
-	}, [itemsStatus.key, items, p.id]);
+		if (items) pokeSwr(p.id + ":pm:items", items);
+	}, [p.id, items]);
 	useEffect(() => {
-		if (milestonesStatus.key === p.id + ":pm:milestones" && milestones)
-			pokeSwr(p.id + ":pm:milestones", milestones);
-	}, [milestonesStatus.key, milestones, p.id]);
+		if (milestones) pokeSwr(p.id + ":pm:milestones", milestones);
+	}, [p.id, milestones]);
 	useEffect(() => {
-		// loading 中还只有回退默认列，不写入缓存
-		if (statusesStatus.key === p.id + ":pm:statuses" && !statusesStatus.loading)
-			pokeSwr(p.id + ":pm:statuses", statuses);
-	}, [statusesStatus.key, statusesStatus.loading, statuses, p.id]);
-
-	// 切项目重置闸门：上一个项目残留的挂起计数不能吞掉新项目的刷新
-	// biome-ignore lint/correctness/useExhaustiveDependencies: p.id 变化本身即重置信号
-	useEffect(() => {
-		gateRef.current = createRefreshGate();
-	}, [p.id]);
+		// 首次加载完成前只有回退默认列，不写入缓存
+		if (!statusesStatus.loading) pokeSwr(p.id + ":pm:statuses", statuses);
+	}, [statusesStatus.loading, p.id, statuses]);
 
 	/** GitHub 同步后台执行：失败/超时以常驻横幅展示并可重试（只弹 toast 用户
 	 * 会错过，#66 的看板全空就是这么来的）；成功有变更时 toast + 静默重载；
@@ -205,14 +202,17 @@ export default function PmPanel({ p }: { p: Project }) {
 		if (hasGithub) syncInBackground();
 	};
 
-	/** 变更入闸执行：期间到达的整表刷新一律扣下，结束后有被扣下的就重载收口 */
+	/** 变更入闸执行：开始即 invalidateSwr 作废该 key 在途的整表读（按「请求发出
+	 * 时刻」判定，变更前的旧响应不再落地覆盖乐观顺序，也不污染缓存）；结束无条件
+	 * reloadLocal 以数据库为准收口 */
 	const runMutate = async (fn: () => Promise<void>) => {
-		const gate = gateRef.current;
-		gate.begin();
+		mutatingRef.current++;
+		invalidateSwr(p.id + ":pm:items");
 		try {
 			await fn();
 		} finally {
-			if (gate.end()) reloadLocal();
+			mutatingRef.current = Math.max(0, mutatingRef.current - 1);
+			reloadLocal();
 		}
 	};
 
@@ -291,8 +291,8 @@ export default function PmPanel({ p }: { p: Project }) {
 					.then(setMilestones)
 					.catch(() => {});
 			} catch (e) {
+				// 失败回滚由 runMutate 出闸的 reloadLocal 以数据库为准收口
 				toast("移动失败：" + String(e));
-				reloadLocal(); // 失败回滚：以数据库为准；结果被扣下时由出闸重载兜底
 			}
 		});
 
@@ -350,8 +350,7 @@ export default function PmPanel({ p }: { p: Project }) {
 		runMutate(async () => {
 			const saved = await api.pmUpdateStatuses(next);
 			setStatuses(saved);
-			reloadLocal(); // 列定义变化影响任务归属，整表重载看板数据
-			toast("看板列已更新");
+			toast("看板列已更新"); // 列定义变化影响任务归属，出闸 reloadLocal 整表收口
 		});
 
 	const filtered = useMemo(
@@ -369,13 +368,14 @@ export default function PmPanel({ p }: { p: Project }) {
 		[items],
 	);
 
-	// 首屏加载（无缓存可显）或任一本地资源刷新失败 → 整屏 ResourceState
+	// 整屏 ResourceState 只在「无可显数据」时使用：首屏加载中，或加载/刷新失败且
+	// 没有缓存可显；有数据时刷新失败走 inline 横幅（对齐 ProjectDetail 的 SWR 约定）
 	const loadError = itemsStatus.error || milestonesStatus.error;
 	const loading = items === null || milestones === null;
-	if (loading || loadError)
+	if (loading)
 		return (
 			<ResourceState
-				loading={loading && !loadError}
+				loading={!loadError}
 				error={loadError}
 				onRetry={reloadLocal}
 				title="加载项目数据"
@@ -510,6 +510,14 @@ export default function PmPanel({ p }: { p: Project }) {
 					</Button>
 				)}
 			</div>
+			{loadError && (
+				<div className="inline-error" role="alert">
+					刷新失败，仍显示上次加载的结果。
+					<button className="btn sm" onClick={reloadLocal}>
+						重试
+					</button>
+				</div>
+			)}
 			{syncBanner?.kind === "error" && (
 				<div className="inline-error" role="alert">
 					<span>{syncBanner.message}</span>
