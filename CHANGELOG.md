@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.8（2026-09-11）
+
+- Merge pull request #75 from coconilu/chore/tower-merge-m25
+- Merge branch 'feat/gh-cli-74'
+- fix(pm): parse_close_refs 改按 char_indices 遍历，中文 PR 文本不再 panic (#74)
+- fix(github): try_gh_cli 加 5s 进程超时杀树 + 同步链路逐阶段计时诊断 (#74)
+
 ## v1.2.7（2026-09-11）
 
 - Merge pull request #72 from coconilu/chore/tower-merge-m24
