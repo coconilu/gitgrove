@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.9（2026-09-11）
+
+- Merge pull request #78 from coconilu/chore/tower-merge-m26
+- Merge branch 'feat/swr-77'
+- fix(pm): 回应 review r3——items 变更与 saveStatuses 的作废 keys 补全 (#77)
+- fix(pm): 回应 review r2——变更作废覆盖各自 feed 键、清理过期术语与死代码 (#77)
+- fix(pm): 回应 review r1——缓存命中首帧即显、有旧数据时刷新失败走 inline 横幅、竞态判定改请求发出时刻 (#77)
+- feat(pm): 看板接入 SWR——缓存先显、旋转加载提示、拖拽竞态防护 (#77)
+
 ## v1.2.8（2026-09-11）
 
 - Merge pull request #75 from coconilu/chore/tower-merge-m25
