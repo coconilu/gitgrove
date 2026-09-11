@@ -4,8 +4,10 @@ use reqwest::Client;
 use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{git, store};
@@ -87,8 +89,11 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
         return Err(match agent {
             Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。".to_string(),
             Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。".to_string(),
+            // 认证 URL 的 query 里带 token，绝不进入返回给前端的错误文本：
+            // 只展示源地址，供手动访问。
             Agent::Dsh => format!(
-                "DSH 已在本地 {url} 启动，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。"
+                "DSH 已在本地 {} 启动，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。",
+                url.origin().ascii_serialization()
             ),
         });
     }
@@ -585,24 +590,25 @@ fn dsh_command(executable: &Path, port: u16) -> Command {
     // 目录不作为位置参数传递：dsh 无法携带项目目录，首次由用户在其界面选择。
     // --host 显式固定回环：0.1.x 预览版的默认绑定值可能漂移，就绪探测与
     // 打开的 URL 都依赖回环，不能依赖默认行为。
-    command
-        .args([
-            "web",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "--no-open",
-        ])
-        .current_dir(git::home_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.args([
+        "web",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--no-open",
+    ]);
+    // stdout/stderr 由 start_dsh 接管：认证 URL 只由 dsh 在启动输出里公布。
+    command.current_dir(git::home_dir());
     command
 }
 
 // DSH 默认端口（用户手动 `dsh web` 时的监听口）；本应用 spawn 时避开它选空闲端口。
 const DSH_DEFAULT_PORT: u16 = 3080;
+
+// 认证 URL 捕获的有界等待（生产值）：URL 行在服务绑定后才打印，正常秒级
+// 出现；就绪后再给足慢机余量，超时则回退裸地址（测试传更短值加速）。
+const DSH_URL_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // DSH 没有实例注册表（kimi 有 server/instances）：复用只能依据本应用历史
 // spawn 时记录的端口与默认端口。记录中的端口来自本应用发起的 dsh，且 TCP
@@ -633,6 +639,20 @@ fn dsh_record_port(record: &Path, port: u16) {
     }
 }
 
+// 复用候选顺序：默认端口（用户手动 dsh web 的监听口）优先于本应用历史
+// 记录。历史记录可能指向遗留实例——其认证 token 已随旧进程消亡、浏览器
+// 也没有它的认证 cookie（#71：:3080 在手却打开了 54964 遗留实例的认证页）；
+// 而用户手动实例的浏览器会话通常已持有 cookie，裸地址即可进入。
+fn dsh_reuse_candidates(record: &Path) -> Vec<u16> {
+    let mut candidates = vec![DSH_DEFAULT_PORT];
+    for port in dsh_read_ports(record) {
+        if !candidates.contains(&port) {
+            candidates.push(port);
+        }
+    }
+    candidates
+}
+
 async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
     for port in candidates {
         let probe = tokio::time::timeout(
@@ -649,10 +669,123 @@ async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
 
 const DSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
+// 行内第一个 http(s) URL 的宽松提取：dsh 0.1.x 是预览版，输出格式可能漂移，
+// 不做整行正则，只找 http 起头、以空白/引号为界的片段并容忍结尾标点。
+// `to_ascii_lowercase` 保持字节长度不变，索引在两个字符串间通用。
+fn first_http_url(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    for (at, _) in lower.match_indices("http") {
+        let candidate = line[at..]
+            .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(['.', ',', ';', ':', ')', '）', '。']);
+        if let Ok(parsed) = Url::parse(candidate) {
+            if matches!(parsed.scheme(), "http" | "https") {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+// 从捕获的输出行里挑出本实例的认证 URL。候选必须指向本实例：回环 + 本
+// 端口优先，其次本端口任意 host（dsh 在 0.0.0.0 绑定时会附打印 LAN 地址，
+// 与本实例同机）；输出里可能出现的无关链接（文档地址等）一律不采纳，由
+// 调用方回退本端口的裸地址，而不是误开无关页面。
+fn pick_dsh_url(lines: &[String], port: u16) -> Option<String> {
+    let mut on_port = None;
+    for line in lines {
+        let Some(url) = first_http_url(line) else {
+            continue;
+        };
+        let Ok(parsed) = Url::parse(&url) else {
+            continue;
+        };
+        if parsed.port() != Some(port) {
+            continue;
+        }
+        let loopback = matches!(
+            parsed.host_str(),
+            Some("127.0.0.1") | Some("localhost") | Some("::1")
+        );
+        if loopback {
+            return Some(url);
+        }
+        if on_port.is_none() {
+            on_port = Some(url);
+        }
+    }
+    on_port
+}
+
+// 持续排空子进程一路输出直到 EOF：认证 URL 行随时可能出现，而不排空会让
+// dsh 在 OS 管道缓冲写满后卡死。行数封顶，超出仅丢弃；内容含 token，绝不
+// 进日志或任何返回给前端的文本（文件头契约），捕获窗口结束后即被丢弃。
+fn dsh_drain_output<R: std::io::Read + Send + 'static>(stream: R, sink: Arc<Mutex<Vec<String>>>) {
+    let mut reader = BufReader::new(stream);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&raw)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string();
+                let mut lines = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if lines.len() < 512 {
+                    lines.push(line);
+                }
+            }
+        }
+    }
+}
+
+// 子进程输出的有界驻留，仅供启动窗口内的认证 URL 提取。
+struct DshCapture {
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl DshCapture {
+    fn attach(child: &mut Child) -> Self {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        // stdout/stderr 类型不同，先擦除为统一的 Read 再交给排空线程。
+        for stream in [
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let sink = lines.clone();
+            std::thread::spawn(move || dsh_drain_output(stream, sink));
+        }
+        Self { lines }
+    }
+
+    fn authenticated_url(&self, port: u16) -> Option<String> {
+        pick_dsh_url(
+            &self
+                .lines
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            port,
+        )
+    }
+}
+
 async fn start_dsh(
     executable: &Path,
     ready_timeout: Duration,
-) -> Result<(u16, StartedServer), String> {
+    url_wait: Duration,
+) -> Result<(u16, StartedServer, Option<String>), String> {
     // 向系统要一个空闲端口（参照 connect_kimi）：默认 3080 可能被占用。
     // 端口释放与 dsh 实际绑定之间存在竞窗，桌面环境下足够小。
     let socket = std::net::TcpListener::bind("127.0.0.1:0")
@@ -662,19 +795,33 @@ async fn start_dsh(
         .map_err(|_| "无法分配本地端口，请检查系统网络设置。")?
         .port();
     drop(socket);
-    let mut owned = StartedServer(Some(
-        dsh_command(executable, port)
-            .spawn()
-            .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?,
-    ));
-    let deadline = tokio::time::Instant::now() + ready_timeout;
+    let mut command = dsh_command(executable, port);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|_| "DSH 启动失败，请检查 Node.js 与 npm 安装后重试。")?;
+    let capture = DshCapture::attach(&mut child);
+    let mut owned = StartedServer(Some(child));
+    // URL 行在服务绑定之后打印：就绪时刻才开始计捕获窗口（url_wait），慢启动
+    // 也拿满余量；窗口内没等到 URL 就回退裸地址。
+    let mut capture_deadline: Option<tokio::time::Instant> = None;
+    let ready_deadline = tokio::time::Instant::now() + ready_timeout;
     loop {
+        if let Some(url) = capture.authenticated_url(port) {
+            return Ok((port, owned, Some(url)));
+        }
         // 就绪检测同样是 TCP 端口探测，进程名不可靠。
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+        let ready = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
-            .is_ok()
-        {
-            return Ok((port, owned));
+            .is_ok();
+        if ready {
+            let deadline = capture_deadline.get_or_insert(tokio::time::Instant::now() + url_wait);
+            if tokio::time::Instant::now() >= *deadline {
+                return Ok((port, owned, None));
+            }
         }
         if owned
             .0
@@ -686,10 +833,10 @@ async fn start_dsh(
         {
             return Err("DSH 启动后即退出，请检查 npm 全局安装或网络后重试。".into());
         }
-        if tokio::time::Instant::now() >= deadline {
+        if !ready && tokio::time::Instant::now() >= ready_deadline {
             return Err("DSH 启动超时，本次启动的进程已停止。请检查网络或 npx 安装后重试。".into());
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 }
 
@@ -735,31 +882,53 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             // dsh 无法携带项目目录：打开 web 首页，首次由用户在 DSH 界面选择
             // 项目目录（dsh 会记住）。绝不走 launch.rs 的编辑器 spec 模式——
             // 那条路会把目录当位置参数传入并被 dsh 静默忽略。
-            // 先复用已有实例（历史端口 + 默认端口，含用户手动启动的 dsh web），
-            // 探测不到存活端口才新起，避免重复点击堆积 node.exe 常驻进程。
-            let mut candidates = dsh_read_ports(&dsh_port_record());
-            if !candidates.contains(&DSH_DEFAULT_PORT) {
-                candidates.push(DSH_DEFAULT_PORT);
-            }
-            if let Some(port) = dsh_first_live_port(candidates).await {
+            //
+            // 认证模型（dsh 源码 packages/client/connection/src/browser-auth.ts）：
+            // 根路径 ?token= 的 launch token 由进程内随机生成、仅存内存、随
+            // 进程消亡，绝不落盘（~/.dsh/.credentials.yaml 只存 cookie 签名
+            // secret，无法据此重建 URL）；token 换发 30 天 HttpOnly 认证
+            // cookie。因此：自己 spawn 的实例从启动输出捕获带 token 的 URL
+            // 打开（100% 可用）；复用实例拿不到 token，只能开裸地址，依赖
+            // 浏览器里已有的认证 cookie（用户此前打开过 dsh 打印的链接，或
+            // 本会话曾以认证链接打开过），没有 cookie 时 dsh 返回 401 认证
+            // 页，由返回文案给出处理办法。不做读取 secret 伪造 cookie 等
+            // 扩大化方案。
+            let record = dsh_port_record();
+            if let Some(port) = dsh_first_live_port(dsh_reuse_candidates(&record)).await {
                 let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
                 open_gui_url(&url, agent)?;
                 return Ok(OpenReceipt {
-                    message: "DSH 已在本地运行，已请求浏览器打开本地服务。",
+                    message: "DSH 已在本地运行，已请求浏览器打开本地服务。若浏览器显示认证页，请关闭该 DSH 实例后重试，GitGrove 会重新启动并自动携带认证链接。",
                 });
             }
             let executable = dsh_executable()?;
-            let (port, owned) = start_dsh(&executable, DSH_READY_TIMEOUT).await?;
-            dsh_record_port(&dsh_port_record(), port);
-            let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+            let (port, owned, authenticated) =
+                start_dsh(&executable, DSH_READY_TIMEOUT, DSH_URL_CAPTURE_TIMEOUT).await?;
+            dsh_record_port(&record, port);
             // 常驻进程先转交后台再打开浏览器：浏览器失败时服务仍在，
             // 错误文案里的本地地址可手动访问。
             owned.retain();
-            open_gui_url(&url, agent)?;
-            Ok(OpenReceipt {
-                message:
-                    "DSH 已启动，已请求浏览器打开本地服务。首次使用需在 DSH 界面选择项目目录。",
-            })
+            match authenticated {
+                // URL 来自 dsh 自己的 stdout：token 不入日志、不入错误文案。
+                Some(url) => {
+                    let url =
+                        Url::parse(&url).map_err(|_| "DSH 打印的认证链接无法解析，请重试。")?;
+                    open_gui_url(&url, agent)?;
+                    Ok(OpenReceipt {
+                        message:
+                            "DSH 已启动，已通过认证链接打开本地服务。首次使用需在 DSH 界面选择项目目录。",
+                    })
+                }
+                None => {
+                    let url =
+                        Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
+                    open_gui_url(&url, agent)?;
+                    Ok(OpenReceipt {
+                        message:
+                            "DSH 已启动，但未捕获到认证链接，已打开服务首页。若浏览器显示认证页，请关闭 DSH 后重试。",
+                    })
+                }
+            }
         }
     }
 }
