@@ -968,22 +968,7 @@ mod workflow_tests {
             .iter()
             .map(|p| format!("{}\n{}", p.title, p.body.as_deref().unwrap_or_default()))
             .collect();
-        // pm_sync_github 会把 PR 标题+正文送进 parse_close_refs；该函数在
-        // pm/sync.rs（越出本 mission 的文件范围）按字节扫词、遇非 ASCII 文本
-        // 会 panic（#74 用户机常驻超时横幅的实际根因之一，已单独上报）。
-        // 这里捕获住让计时跑完 [6]，upsert 阶段用空信号兜底。
-        let signals = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_signals(&[], &pr_texts))) {
-            Ok(s) => s,
-            Err(payload) => {
-                let msg = payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown panic".into());
-                println!("[!] build_signals panic（已知越界 bug：pm/sync.rs parse_close_refs 遇非 ASCII 文本 panic，已单独上报）: {msg}");
-                build_signals(&[], &[])
-            }
-        };
+        let signals = build_signals(&[], &pr_texts);
         let snapshots = recent_issues(issues.into_iter().map(GithubIssueSnapshot::from).collect(), now_ts());
         let t = Instant::now();
         let r = state.pm.lock().unwrap().sync_github("coconilu", "gitgrove", &snapshots, &signals);
