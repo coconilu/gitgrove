@@ -10,7 +10,6 @@ import {
 	focusSummary,
 	groupByStatus,
 	issueUrl,
-	loadPmLocalData,
 	milestoneProgress,
 	parseGithubRef,
 	pmSyncWithTimeout,
@@ -230,19 +229,12 @@ test("issueUrl 拼出 issue 链接，解析失败返回 null", () => {
 	assert.equal(issueUrl("bad-ref"), null);
 });
 
-test("sync 悬挂不阻塞本地渲染：假 promise 永不 resolve，本地数据照常加载（#61）", async () => {
+test("sync 悬挂由前端超时兜底收敛为 timeout，永不阻塞看板（#61）", async () => {
 	const hang = () => new Promise(() => {}); // 模拟同步悬挂：永不 settle
-	// 先发起同步（fire-and-forget），不等它
-	const sync = pmSyncWithTimeout("p1", { syncGithub: hang }, 10);
-	// 本地数据加载与悬挂的同步无关，立即返回（PmPanel 先渲染看板的依据）
-	const local = await loadPmLocalData({
-		listItems: async () => [item({ id: "a" })],
-		listMilestones: async () => [],
+	// 本地数据加载与同步无关（PmPanel 里同步是 fire-and-forget，不参与首屏渲染）
+	assert.deepEqual(await pmSyncWithTimeout("p1", { syncGithub: hang }, 10), {
+		kind: "timeout",
 	});
-	assert.equal(local.items[0].id, "a");
-	assert.equal(local.milestones.length, 0);
-	// 悬挂的同步由前端超时兜底收敛为 timeout（调用方据此 toast 并放弃本次等待）
-	assert.deepEqual(await sync, { kind: "timeout" });
 });
 
 test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async () => {
@@ -267,18 +259,6 @@ test("pmSyncWithTimeout：失败与成功分别收敛为 failed/synced", async (
 		kind: "synced",
 		result: { created: 1, updated: 2, moved: 3 },
 	});
-});
-
-test("loadPmLocalData 任一本地请求失败则上抛（PmPanel 据此进错误态）", async () => {
-	await assert.rejects(
-		loadPmLocalData({
-			listItems: async () => [item({ id: "a" })],
-			listMilestones: async () => {
-				throw new Error("db down");
-			},
-		}),
-		/db down/,
-	);
 });
 
 test("syncBannerFromOutcome：失败/超时映射为常驻错误横幅（#66 静默吞错回归）", () => {

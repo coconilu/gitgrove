@@ -237,23 +237,6 @@ export function computeMove(
  * keyring 等无法覆盖的悬挂——超时后放弃等待当次同步，看板不受影响 */
 export const PM_SYNC_TIMEOUT_MS = 15_000;
 
-export interface PmLocalDeps {
-	listItems(): Promise<PmItem[]>;
-	listMilestones(): Promise<PmMilestoneWithStats[]>;
-}
-
-/** 本地看板数据一次加载（SQLite 毫秒级）。与 GitHub 同步完全解耦：同步悬挂、
- * 失败都不影响本函数返回——这是「项目页签永远正在加载」(#61) 的修复核心 */
-export async function loadPmLocalData(
-	deps: PmLocalDeps,
-): Promise<{ items: PmItem[]; milestones: PmMilestoneWithStats[] }> {
-	const [items, milestones] = await Promise.all([
-		deps.listItems(),
-		deps.listMilestones(),
-	]);
-	return { items, milestones };
-}
-
 export interface PmSyncDeps {
 	syncGithub(projectId: string): Promise<PmSyncResult>;
 }
