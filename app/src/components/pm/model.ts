@@ -77,11 +77,10 @@ export function doneStatusId(statuses: PmStatusDef[]): string {
 export const DONE_COLLAPSE_BATCH = 20;
 
 /** 后端 items.closedAt（进入最后一列的时间，unix 秒，v4 迁移）；老数据为 null */
-type WithClosedAt = PmItem & { closedAt?: number | null };
 
 /** done 排序键：closedAt 优先（标题/标签刷新会扰动 updatedAt），老数据回退 updatedAt */
 export function doneRecencyKey(item: PmItem): number {
-	return (item as WithClosedAt).closedAt ?? item.updatedAt;
+	return item.closedAt ?? item.updatedAt;
 }
 
 /** done 列按最近完成倒序 */
@@ -106,19 +105,23 @@ export interface DoneColumnView {
 }
 
 /**
- * done 列折叠视图：无筛选且超出 limit 时只取「最近完成」前 limit 张
- * （按 closedAt ?? updatedAt 倒序）；有筛选/搜索或未超限时原样全显
- * （保持列内 order 序，完全展开后拖拽排序不受影响）。
+ * done 列折叠视图：始终按「最近完成」倒序（closedAt ?? updatedAt）——
+ * 折叠态与展开态同一顺序，展开只是连续追加更早的卡片、不重排。
+ * 折叠只在无筛选/搜索时生效：有筛选时渲染全部命中卡片，排序不变。
+ * done 是终态列，列内按完成时间排列；列内手动拖拽不再改变显示顺序。
  */
 export function doneColumnView(
 	items: PmItem[],
 	filter: BoardFilter,
 	limit: number,
 ): DoneColumnView {
-	if (filterActive(filter) || items.length <= limit)
-		return { visible: items, hiddenCount: 0 };
-	const visible = doneRecencySort(items).slice(0, limit);
-	return { visible, hiddenCount: items.length - limit };
+	const sorted = doneRecencySort(items);
+	if (filterActive(filter) || sorted.length <= limit)
+		return { visible: sorted, hiddenCount: 0 };
+	return {
+		visible: sorted.slice(0, limit),
+		hiddenCount: sorted.length - limit,
+	};
 }
 
 /** 仓库路径取末段作为卡片/过滤条上的短名 */

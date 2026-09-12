@@ -328,17 +328,19 @@ test("doneRecencySort：closedAt 优先，老数据（无 closedAt）回退 upda
 	assert.equal(doneRecencyKey({ ...items[3], closedAt: null }), 500);
 });
 
-test("doneColumnView：默认只留最近 20 张（倒序），分批展开，有筛选/搜索时全显", () => {
+test("doneColumnView：默认只留最近 20 张（倒序），展开是连续追加不重排，搜索/筛选全显", () => {
+	// fixture 让 order 序（d0..d44）与完成时间倒序（d44..d0）刻意相反，
+	// 断言才能区分「closedAt 倒序」与「原样返回 order 序」两种实现
 	const done = Array.from({ length: 45 }, (_, n) =>
 		item({
 			id: `d${n}`,
 			status: "done",
 			order: `k${String(n).padStart(3, "0")}`,
-			// closedAt 与列序相反：order 靠前的是老卡
-			closedAt: 1000 - n,
-			updatedAt: 1000 - n,
+			closedAt: n,
+			updatedAt: n,
 		}),
 	);
+	const descIds = Array.from({ length: 45 }, (_, n) => `d${44 - n}`);
 	const none = {
 		milestoneId: null,
 		repoPath: null,
@@ -347,42 +349,52 @@ test("doneColumnView：默认只留最近 20 张（倒序），分批展开，�
 		search: "",
 	};
 
-	// 默认折叠：最近 20 张（closedAt 倒序 → d0..d19），其余 25 张隐藏
+	// 默认折叠：最近 20 张（closedAt 倒序 → d44..d25），其余 25 张隐藏
 	const folded = doneColumnView(done, none, DONE_COLLAPSE_BATCH);
 	assert.equal(folded.visible.length, DONE_COLLAPSE_BATCH);
 	assert.equal(folded.hiddenCount, 25);
-	assert.deepEqual(folded.visible.map((i) => i.id).slice(0, 3), [
-		"d0",
-		"d1",
-		"d2",
-	]);
+	assert.deepEqual(
+		folded.visible.map((i) => i.id),
+		descIds.slice(0, 20),
+	);
 
-	// 每批展开 20：两批后 40 张可见、剩 5 张
+	// 每批展开 20：40 张可见、剩 5 张；展开 = 在倒序序列上连续追加，不重排
 	const oneBatch = doneColumnView(done, none, DONE_COLLAPSE_BATCH * 2);
 	assert.equal(oneBatch.visible.length, 40);
 	assert.equal(oneBatch.hiddenCount, 5);
+	assert.deepEqual(
+		oneBatch.visible.map((i) => i.id),
+		descIds.slice(0, 40),
+	);
+	assert.deepEqual(
+		oneBatch.visible.slice(0, folded.visible.length).map((i) => i.id),
+		folded.visible.map((i) => i.id),
+	);
 	const allShown = doneColumnView(done, none, DONE_COLLAPSE_BATCH * 3);
 	assert.equal(allShown.visible.length, 45);
 	assert.equal(allShown.hiddenCount, 0);
-	// 完全展开后保持列内 order 序（拖拽排序不被倒序视图覆盖）
 	assert.deepEqual(
-		allShown.visible.map((i) => i.id).slice(0, 3),
-		["d0", "d1", "d2"].map((id) => id), // order 递增 = closedAt 递减，此处一致
+		allShown.visible.map((i) => i.id),
+		descIds,
+	);
+	assert.deepEqual(
+		allShown.visible.slice(0, oneBatch.visible.length).map((i) => i.id),
+		oneBatch.visible.map((i) => i.id),
 	);
 
-	// 搜索/筛选绕过折叠：全部命中卡片按原序渲染
+	// 搜索/筛选绕过折叠：全部命中卡片渲染，且排序仍是完成时间倒序（不切回 order 序）
 	assert.deepEqual(doneColumnView(done, { ...none, search: "任务" }, 20), {
-		visible: done,
+		visible: doneRecencySort(done),
 		hiddenCount: 0,
 	});
 	assert.deepEqual(doneColumnView(done, { ...none, priority: "high" }, 20), {
-		visible: done,
+		visible: doneRecencySort(done),
 		hiddenCount: 0,
 	});
 
-	// 不超限时不折叠
+	// 不超限时不折叠，仍按倒序
 	assert.deepEqual(doneColumnView(done.slice(0, 20), none, 20), {
-		visible: done.slice(0, 20),
+		visible: doneRecencySort(done.slice(0, 20)),
 		hiddenCount: 0,
 	});
 });
