@@ -540,6 +540,7 @@ export default function PmPanel({ p }: { p: Project }) {
 					items={filtered}
 					statuses={statuses}
 					milestones={milestones ?? []}
+					filter={filter}
 					onMove={moveItem}
 					onOpen={(item) => setItemDialog({ item, status: null })}
 					onAdd={(status) => setItemDialog({ item: null, status })}

@@ -22,7 +22,11 @@ import { useState } from "react";
 import { useStore } from "../../store";
 import type { PmItem, PmMilestoneWithStats, PmStatusDef } from "../../types";
 import {
+	type BoardFilter,
 	computeMove,
+	DONE_COLLAPSE_BATCH,
+	doneColumnView,
+	doneStatusId,
 	dueInfo,
 	groupByStatus,
 	issueUrl,
@@ -35,6 +39,7 @@ interface BoardProps {
 	items: PmItem[];
 	statuses: PmStatusDef[];
 	milestones: PmMilestoneWithStats[];
+	filter: BoardFilter;
 	onMove: (
 		itemId: string,
 		toStatus: string,
@@ -55,6 +60,7 @@ export default function BoardView({
 	items,
 	statuses,
 	milestones,
+	filter,
 	onMove,
 	onOpen,
 	onAdd,
@@ -69,6 +75,7 @@ export default function BoardView({
 	);
 	const groups = groupByStatus(items, statuses);
 	const active = activeId ? items.find((i) => i.id === activeId) : null;
+	const doneId = doneStatusId(statuses);
 
 	const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
 	const onDragEnd = (e: DragEndEvent) => {
@@ -99,6 +106,8 @@ export default function BoardView({
 						dot={COLUMN_DOTS[idx % COLUMN_DOTS.length]}
 						items={groups.get(status.id) ?? []}
 						milestones={milestones}
+						foldable={status.id === doneId}
+						filter={filter}
 						onOpen={onOpen}
 						onAdd={onAdd}
 					/>
@@ -118,6 +127,8 @@ function Column({
 	dot,
 	items,
 	milestones,
+	foldable,
+	filter,
 	onOpen,
 	onAdd,
 }: {
@@ -125,10 +136,18 @@ function Column({
 	dot: string;
 	items: PmItem[];
 	milestones: PmMilestoneWithStats[];
+	foldable: boolean;
+	filter: BoardFilter;
 	onOpen: (item: PmItem) => void;
 	onAdd: (status: string) => void;
 }) {
 	const { setNodeRef, isOver } = useDroppable({ id: status.id });
+	// 展开的批次数只存在于 done 列组件内：按列独立、不持久化，切项目随
+	// PmPanel 重挂载自然重置
+	const [expandedBatches, setExpandedBatches] = useState(0);
+	const { visible, hiddenCount } = foldable
+		? doneColumnView(items, filter, DONE_COLLAPSE_BATCH * (1 + expandedBatches))
+		: { visible: items, hiddenCount: 0 };
 	return (
 		<section
 			className={"pm-col" + (isOver ? " over" : "")}
@@ -140,11 +159,11 @@ function Column({
 				<span className="pm-count">{items.length}</span>
 			</header>
 			<SortableContext
-				items={items.map((i) => i.id)}
+				items={visible.map((i) => i.id)}
 				strategy={verticalListSortingStrategy}
 			>
 				<div className="pm-col-body" ref={setNodeRef}>
-					{items.map((item) => (
+					{visible.map((item) => (
 						<SortableCard
 							key={item.id}
 							item={item}
@@ -152,6 +171,14 @@ function Column({
 							onOpen={onOpen}
 						/>
 					))}
+					{hiddenCount > 0 && (
+						<button
+							className="pm-show-older"
+							onClick={() => setExpandedBatches((n) => n + 1)}
+						>
+							显示更早的 {hiddenCount} 张
+						</button>
+					)}
 					<button className="pm-add-card" onClick={() => onAdd(status.id)}>
 						+ 添加
 					</button>

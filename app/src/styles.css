@@ -2379,6 +2379,19 @@ button:disabled {
 	color: var(--text);
 	border-color: var(--accent);
 }
+.pm-show-older {
+	color: var(--muted);
+	padding: 6px 10px;
+	border: 1px dashed var(--border);
+	border-radius: var(--radius);
+	text-align: center;
+	font-size: 12px;
+	background: none;
+}
+.pm-show-older:hover {
+	color: var(--text);
+	border-color: var(--accent);
+}
 .pm-form {
 	display: flex;
 	flex-direction: column;

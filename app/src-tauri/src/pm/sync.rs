@@ -186,12 +186,16 @@ impl PmStore {
             }
             if issue.state == "closed" {
                 if item.status != done_id {
-                    self.sync_move(&item, &done_id)?;
+                    self.sync_move(&item, &done_id, issue.closed_at)?;
                     result.moved += 1;
+                } else if item.closed_at.is_none() && issue.closed_at.is_some() {
+                    // v4 迁移前的老行回填 GitHub 权威 closed_at（只影响 done
+                    // 折叠排序，不计数、不动 updated_at）
+                    self.backfill_closed_at(&item, issue.closed_at.unwrap())?;
                 }
             } else if item.status == done_id {
                 // issue 在 done 列上重新打开 → 回 todo（唯一允许的回退）
-                self.sync_move(&item, &todo_id)?;
+                self.sync_move(&item, &todo_id, None)?;
                 result.moved += 1;
             } else if signals.has(issue.number) {
                 if let Some(doing_id) = &doing {
@@ -199,7 +203,7 @@ impl PmStore {
                     let before_doing = pos(doing_id)
                         .is_some_and(|d| pos(&item.status).is_some_and(|p| p < d));
                     if item.status != *doing_id && before_doing {
-                        self.sync_move(&item, doing_id)?;
+                        self.sync_move(&item, doing_id, None)?;
                         result.moved += 1;
                     }
                 }
@@ -247,6 +251,7 @@ impl PmStore {
             order: ord,
             github_ref: Some(gref.to_string()),
             manual_lock: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -272,16 +277,43 @@ impl PmStore {
         Ok(())
     }
 
-    /// 同步迁移：挪到目标列尾部
-    fn sync_move(&self, item: &super::model::Item, to_status: &str) -> Result<(), String> {
+    /// 同步迁移：挪到目标列尾部。进最后一列时打点 closed_at（优先 GitHub 的
+    /// closed_at，缺失用当前时间），离开最后一列清空
+    fn sync_move(
+        &self,
+        item: &super::model::Item,
+        to_status: &str,
+        closed_at: Option<i64>,
+    ) -> Result<(), String> {
+        let done_id = self.done_status_id()?;
+        let closed_at = if to_status == done_id {
+            Some(closed_at.unwrap_or_else(now_ts))
+        } else {
+            None
+        };
         let last = self.last_key_in_column(to_status, Some(&item.id))?;
         let key = order::key_between(last.as_deref(), None)?;
         self.conn
             .execute(
-                "UPDATE items SET status=?2, ord=?3, updated_at=?4 WHERE id=?1 AND deleted_at IS NULL",
-                params![item.id, to_status, key, now_ts()],
+                "UPDATE items SET status=?2, ord=?3, updated_at=?4, closed_at=?5 WHERE id=?1 AND deleted_at IS NULL",
+                params![item.id, to_status, key, now_ts(), closed_at],
             )
             .map_err(|e| format!("同步迁移 item 失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 老数据回填 closed_at（条目已在最后一列但 closed_at 为 NULL）
+    fn backfill_closed_at(
+        &self,
+        item: &super::model::Item,
+        closed_at: i64,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE items SET closed_at=?2 WHERE id=?1 AND deleted_at IS NULL",
+                params![item.id, closed_at],
+            )
+            .map_err(|e| format!("回填 closed_at 失败: {e}"))?;
         Ok(())
     }
 }
@@ -538,6 +570,37 @@ mod tests {
         let r = sync1(&store, &[issue(1, "open")], &[1], &[]);
         assert_eq!(r.moved, 0);
         assert_eq!(card(&store, 1).status, "review");
+    }
+
+    #[test]
+    fn closed_at_stamped_from_github_and_cleared_on_reopen() {
+        let store = PmStore::open_memory();
+        let now = 1_800_000_000;
+
+        // closed issue 迁入 done：closed_at 取 GitHub 权威关闭时间
+        sync1(&store, &[issue_closed_at(1, now - 3600)], &[], &[]);
+        assert_eq!(card(&store, 1).closed_at, Some(now - 3600));
+
+        // issue 快照缺 closed_at：回退当前时间，但一定有值
+        sync1(&store, &[issue(2, "closed")], &[], &[]);
+        assert!(card(&store, 2).closed_at.is_some());
+
+        // reopen → 回 todo 且 closed_at 清空
+        sync1(&store, &[issue(1, "open")], &[], &[]);
+        let reopened = card(&store, 1);
+        assert_eq!(reopened.status, "todo");
+        assert_eq!(reopened.closed_at, None);
+
+        // v4 前老行（closed_at NULL 且已在 done）：同步时用 GitHub 权威时间回填
+        store
+            .conn
+            .execute(
+                "UPDATE items SET closed_at=NULL WHERE id=?1",
+                params![card(&store, 2).id],
+            )
+            .unwrap();
+        sync1(&store, &[issue_closed_at(2, now - 60)], &[], &[]);
+        assert_eq!(card(&store, 2).closed_at, Some(now - 60));
     }
 
     #[test]
