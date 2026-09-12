@@ -3,9 +3,14 @@ import test from "node:test";
 import {
 	computeMove,
 	DEFAULT_STATUSES,
+	DONE_COLLAPSE_BATCH,
 	dayDiff,
+	doneColumnView,
+	doneRecencyKey,
+	doneRecencySort,
 	doneStatusId,
 	dueInfo,
+	filterActive,
 	filterItems,
 	focusSummary,
 	groupByStatus,
@@ -287,4 +292,109 @@ test("syncBannerFromOutcome：有变更提示成功，无变更返回 null", () 
 		}),
 		null,
 	);
+});
+
+test("filterActive：任一筛选器非「全部」或搜索框有输入时折叠失效（#80）", () => {
+	const f = {
+		milestoneId: null,
+		repoPath: null,
+		label: null,
+		priority: null,
+		search: "",
+	};
+	assert.equal(filterActive(f), false);
+	assert.equal(filterActive({ ...f, search: "   " }), false); // 纯空白不算输入
+	assert.equal(filterActive({ ...f, search: "bug" }), true);
+	assert.equal(filterActive({ ...f, milestoneId: "m1" }), true);
+	assert.equal(filterActive({ ...f, repoPath: "/r/x" }), true);
+	assert.equal(filterActive({ ...f, label: "ui" }), true);
+	assert.equal(filterActive({ ...f, priority: "high" }), true);
+});
+
+test("doneRecencySort：closedAt 优先，老数据（无 closedAt）回退 updatedAt", () => {
+	// closedAt 较新但 updatedAt 较旧（标题/标签刷新会扰动 updatedAt）→ 仍排前面
+	const items = [
+		item({ id: "label-refreshed", updatedAt: 900 }),
+		item({ id: "recently-done", closedAt: 800, updatedAt: 100 }),
+		item({ id: "old-done", closedAt: 100, updatedAt: 200 }),
+		item({ id: "legacy", updatedAt: 500 }), // v4 前老数据：closedAt 缺失
+	];
+	assert.deepEqual(
+		doneRecencySort(items).map((i) => i.id),
+		["label-refreshed", "recently-done", "legacy", "old-done"],
+	);
+	assert.equal(doneRecencyKey(items[3]), 500);
+	// closedAt 为 null（后端老行显式 null）同样回退 updatedAt
+	assert.equal(doneRecencyKey({ ...items[3], closedAt: null }), 500);
+});
+
+test("doneColumnView：默认只留最近 20 张（倒序），展开是连续追加不重排，搜索/筛选全显", () => {
+	// fixture 让 order 序（d0..d44）与完成时间倒序（d44..d0）刻意相反，
+	// 断言才能区分「closedAt 倒序」与「原样返回 order 序」两种实现
+	const done = Array.from({ length: 45 }, (_, n) =>
+		item({
+			id: `d${n}`,
+			status: "done",
+			order: `k${String(n).padStart(3, "0")}`,
+			closedAt: n,
+			updatedAt: n,
+		}),
+	);
+	const descIds = Array.from({ length: 45 }, (_, n) => `d${44 - n}`);
+	const none = {
+		milestoneId: null,
+		repoPath: null,
+		label: null,
+		priority: null,
+		search: "",
+	};
+
+	// 默认折叠：最近 20 张（closedAt 倒序 → d44..d25），其余 25 张隐藏
+	const folded = doneColumnView(done, none, DONE_COLLAPSE_BATCH);
+	assert.equal(folded.visible.length, DONE_COLLAPSE_BATCH);
+	assert.equal(folded.hiddenCount, 25);
+	assert.deepEqual(
+		folded.visible.map((i) => i.id),
+		descIds.slice(0, 20),
+	);
+
+	// 每批展开 20：40 张可见、剩 5 张；展开 = 在倒序序列上连续追加，不重排
+	const oneBatch = doneColumnView(done, none, DONE_COLLAPSE_BATCH * 2);
+	assert.equal(oneBatch.visible.length, 40);
+	assert.equal(oneBatch.hiddenCount, 5);
+	assert.deepEqual(
+		oneBatch.visible.map((i) => i.id),
+		descIds.slice(0, 40),
+	);
+	assert.deepEqual(
+		oneBatch.visible.slice(0, folded.visible.length).map((i) => i.id),
+		folded.visible.map((i) => i.id),
+	);
+	const allShown = doneColumnView(done, none, DONE_COLLAPSE_BATCH * 3);
+	assert.equal(allShown.visible.length, 45);
+	assert.equal(allShown.hiddenCount, 0);
+	assert.deepEqual(
+		allShown.visible.map((i) => i.id),
+		descIds,
+	);
+	assert.deepEqual(
+		allShown.visible.slice(0, oneBatch.visible.length).map((i) => i.id),
+		oneBatch.visible.map((i) => i.id),
+	);
+
+	// 搜索/筛选绕过折叠：全部命中卡片渲染，且排序仍是完成时间倒序（不切回 order 序）
+	assert.deepEqual(doneColumnView(done, { ...none, search: "任务" }, 20), {
+		visible: doneRecencySort(done),
+		hiddenCount: 0,
+	});
+	assert.deepEqual(doneColumnView(done, { ...none, priority: "high" }, 20), {
+		visible: doneRecencySort(done),
+		hiddenCount: 0,
+	});
+
+	// 不超限时不折叠，仍按倒序
+	assert.deepEqual(doneColumnView(done.slice(0, 20), none, 20), {
+		visible: doneRecencySort(done.slice(0, 20)),
+		hiddenCount: 0,
+	});
 });

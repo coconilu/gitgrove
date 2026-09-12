@@ -71,6 +71,59 @@ export function doneStatusId(statuses: PmStatusDef[]): string {
 	return statuses[statuses.length - 1]?.id ?? "done";
 }
 
+// ---- done 列折叠（#80）：done 只增不减，上百张卡片会卡死渲染 ----
+
+/** 折叠批次：默认显示最近 20 张，「显示更早」每批再展开 20 张 */
+export const DONE_COLLAPSE_BATCH = 20;
+
+/** 后端 items.closedAt（进入最后一列的时间，unix 秒，v4 迁移）；老数据为 null */
+
+/** done 排序键：closedAt 优先（标题/标签刷新会扰动 updatedAt），老数据回退 updatedAt */
+export function doneRecencyKey(item: PmItem): number {
+	return item.closedAt ?? item.updatedAt;
+}
+
+/** done 列按最近完成倒序 */
+export function doneRecencySort(items: PmItem[]): PmItem[] {
+	return [...items].sort((a, b) => doneRecencyKey(b) - doneRecencyKey(a));
+}
+
+/** 折叠是否失效：任一筛选器非「全部」或搜索框有输入 → 渲染全部命中卡片 */
+export function filterActive(f: BoardFilter): boolean {
+	return (
+		f.milestoneId !== null ||
+		f.repoPath !== null ||
+		f.label !== null ||
+		f.priority !== null ||
+		f.search.trim() !== ""
+	);
+}
+
+export interface DoneColumnView {
+	visible: PmItem[];
+	hiddenCount: number;
+}
+
+/**
+ * done 列折叠视图：始终按「最近完成」倒序（closedAt ?? updatedAt）——
+ * 折叠态与展开态同一顺序，展开只是连续追加更早的卡片、不重排。
+ * 折叠只在无筛选/搜索时生效：有筛选时渲染全部命中卡片，排序不变。
+ * done 是终态列，列内按完成时间排列；列内手动拖拽不再改变显示顺序。
+ */
+export function doneColumnView(
+	items: PmItem[],
+	filter: BoardFilter,
+	limit: number,
+): DoneColumnView {
+	const sorted = doneRecencySort(items);
+	if (filterActive(filter) || sorted.length <= limit)
+		return { visible: sorted, hiddenCount: 0 };
+	return {
+		visible: sorted.slice(0, limit),
+		hiddenCount: sorted.length - limit,
+	};
+}
+
 /** 仓库路径取末段作为卡片/过滤条上的短名 */
 export function repoName(repoPath: string): string {
 	const clean = repoPath.replaceAll("\\", "/").replace(/\/$/, "");

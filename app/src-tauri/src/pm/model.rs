@@ -59,6 +59,10 @@ pub struct Item {
     /// 人工拖动过的 GitHub 同步卡片：自动迁移跳过（字段/标题/标签仍刷新）
     #[serde(default)]
     pub manual_lock: bool,
+    /// 进入最后一列（done 约定）的时间戳（unix 秒）；离开最后一列时清空。
+    /// done 列折叠（#80）按此倒序取「最近完成」，不受标题/标签刷新扰动
+    #[serde(default)]
+    pub closed_at: Option<i64>,
     #[serde(default)]
     pub created_at: i64,
     #[serde(default)]
