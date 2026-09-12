@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.0（2026-09-12）
+
+- Merge pull request #81 from coconilu/chore/tower-merge-m27
+- Merge branch 'feat/done-20-80'
+- refactor(pm): done 列统一按 closedAt 倒序，展开=连续追加；types.ts 补 closedAt (#80)
+- feat(pm): done 列折叠——最近 20 张 + 分批展开，补 closedAt 排序字段 (#80)
+
 ## v1.2.9（2026-09-11）
 
 - Merge pull request #78 from coconilu/chore/tower-merge-m26
