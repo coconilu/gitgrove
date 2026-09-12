@@ -31,10 +31,15 @@ fn items_has_manual_lock(conn: &Connection) -> Result<bool, String> {
     column_exists(conn, "items", "manual_lock")
 }
 
+fn items_has_closed_at(conn: &Connection) -> Result<bool, String> {
+    column_exists(conn, "items", "closed_at")
+}
+
 /// 版本化迁移：按序应用；每个版本「DDL + 版本记账」包在同一事务里，
 /// 中途被杀整体回滚、下次 open 原子重试。v1 初始 schema（全 IF NOT EXISTS）；
 /// v2 items 加 manual_lock（GitHub 同步卡片的人工锁定标记）；v3 github_ref
-/// 索引（同步引擎按 owner/repo#number 匹配 upsert）。
+/// 索引（同步引擎按 owner/repo#number 匹配 upsert）；v4 closed_at（进入
+/// 最后一列的时间，#80 done 列折叠按「最近完成」倒序，老数据为 NULL 前端回退 updatedAt）。
 type Guard = fn(&Connection) -> Result<bool, String>;
 const MIGRATIONS: &[(u32, &str, Option<Guard>)] = &[
     (
@@ -84,6 +89,11 @@ const MIGRATIONS: &[(u32, &str, Option<Guard>)] = &[
         "CREATE INDEX IF NOT EXISTS idx_items_github_ref ON items(github_ref);",
         None,
     ),
+    (
+        4,
+        "ALTER TABLE items ADD COLUMN closed_at INTEGER;",
+        Some(items_has_closed_at),
+    ),
 ];
 const STATUSES_KEY: &str = "statuses";
 /// 单实例锁在插件 setup 时才创建，晚于 PmStore::open；瞬态里二次实例可能
@@ -122,6 +132,7 @@ pub(crate) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         order: row.get("ord")?,
         github_ref: row.get("github_ref")?,
         manual_lock: row.get("manual_lock")?,
+        closed_at: row.get("closed_at")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         deleted_at: row.get("deleted_at")?,
@@ -142,7 +153,7 @@ fn row_to_milestone(row: &rusqlite::Row<'_>) -> rusqlite::Result<Milestone> {
 }
 
 pub(crate) const ITEM_COLS: &str =
-    "id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at";
+    "id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, closed_at, created_at, updated_at, deleted_at";
 
 impl PmStore {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -288,8 +299,9 @@ impl PmStore {
         };
         let now = now_ts();
         for s in orphans {
+            // 孤儿离开原列归到第一列：若原列是最后一列，closed_at 一并清空
             tx.execute(
-                "UPDATE items SET status=?2, updated_at=?3 WHERE status=?1 AND deleted_at IS NULL",
+                "UPDATE items SET status=?2, updated_at=?3, closed_at=NULL WHERE status=?1 AND deleted_at IS NULL",
                 params![s, defs[0].id, now],
             )
             .map_err(|e| format!("归位孤儿 item 失败: {e}"))?;
@@ -408,6 +420,15 @@ impl PmStore {
         Ok(items)
     }
 
+    /// 最后一列（done 约定，见前端 model.ts doneStatusId）
+    pub(crate) fn done_status_id(&self) -> Result<String, String> {
+        Ok(self
+            .statuses()?
+            .last()
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| "done".into()))
+    }
+
     pub fn create_item(&self, input: &NewItem) -> Result<Item, String> {
         Self::validate_title(&input.title)?;
         let status = input.status.clone().unwrap_or_else(default_status);
@@ -422,6 +443,12 @@ impl PmStore {
         let last = self.last_key_in_column(&status, None)?;
         let order = order::key_between(last.as_deref(), None)?;
         let now = now_ts();
+        // 直接建在最后一列的任务同样打点（进入 done 的时间，#80 折叠排序键）
+        let closed_at = if status == self.done_status_id()? {
+            Some(now)
+        } else {
+            None
+        };
         let item = Item {
             id: new_id(),
             title: input.title.trim().to_string(),
@@ -436,6 +463,7 @@ impl PmStore {
             order,
             github_ref: None,
             manual_lock: false,
+            closed_at,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -448,12 +476,13 @@ impl PmStore {
         let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
         self.conn
             .execute(
-                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, closed_at, created_at, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.github_ref, item.manual_lock, item.created_at, item.updated_at, item.deleted_at,
+                    item.order, item.github_ref, item.manual_lock, item.closed_at,
+                    item.created_at, item.updated_at, item.deleted_at,
                 ],
             )
             .map_err(|e| format!("写入 item 失败: {e}"))?;
@@ -473,11 +502,22 @@ impl PmStore {
             }
         }
         // 跨列直接改 status 时重排到目标列尾部，避免外列排序键混入
+        let now = now_ts();
         let order = if patch.status != existing.status {
             let last = self.last_key_in_column(&patch.status, Some(&patch.id))?;
             order::key_between(last.as_deref(), None)?
         } else {
             existing.order.clone()
+        };
+        // 进最后一列打点 closed_at，离开清空（#80 done 折叠排序键）
+        let closed_at = if patch.status != existing.status {
+            if patch.status == self.done_status_id()? {
+                Some(now)
+            } else {
+                None
+            }
+        } else {
+            existing.closed_at
         };
         let item = Item {
             title: patch.title.trim().to_string(),
@@ -491,17 +531,18 @@ impl PmStore {
             due_date: patch.due_date.clone(),
             manual_lock: patch.manual_lock,
             order,
-            updated_at: now_ts(),
+            closed_at,
+            updated_at: now,
             ..existing
         };
         let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
         self.conn
             .execute(
-                "UPDATE items SET title=?2, body=?3, status=?4, priority=?5, milestone_id=?6, labels=?7, repo_path=?8, branch=?9, due_date=?10, ord=?11, manual_lock=?12, updated_at=?13 WHERE id=?1",
+                "UPDATE items SET title=?2, body=?3, status=?4, priority=?5, milestone_id=?6, labels=?7, repo_path=?8, branch=?9, due_date=?10, ord=?11, manual_lock=?12, closed_at=?13, updated_at=?14 WHERE id=?1",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.manual_lock, item.updated_at,
+                    item.order, item.manual_lock, item.closed_at, item.updated_at,
                 ],
             )
             .map_err(|e| format!("更新 item 失败: {e}"))?;
@@ -544,13 +585,29 @@ impl PmStore {
         };
         let new_key = order::key_between(prev.as_deref(), next.as_deref())?;
         let now = now_ts();
+        // 进最后一列打点 closed_at，离开清空（#80 done 折叠排序键）
+        let closed_at = if item.status != to_status {
+            if to_status == self.done_status_id()? {
+                Some(now)
+            } else {
+                None
+            }
+        } else {
+            item.closed_at
+        };
         self.conn
             .execute(
-                "UPDATE items SET status=?2, ord=?3, updated_at=?4 WHERE id=?1",
-                params![item_id, to_status, new_key, now],
+                "UPDATE items SET status=?2, ord=?3, updated_at=?4, closed_at=?5 WHERE id=?1",
+                params![item_id, to_status, new_key, now, closed_at],
             )
             .map_err(|e| format!("移动 item 失败: {e}"))?;
-        Ok(Item { status: to_status.into(), order: new_key, updated_at: now, ..item })
+        Ok(Item {
+            status: to_status.into(),
+            order: new_key,
+            updated_at: now,
+            closed_at,
+            ..item
+        })
     }
 
     /// 软删除：写 tombstone，列表查询不再返回
@@ -747,12 +804,13 @@ impl PmStore {
             }
             let labels = serde_json::to_string(&item.labels).map_err(|e| e.to_string())?;
             tx.execute(
-                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, created_at, updated_at, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
+                "INSERT INTO items(id, title, body, status, priority, milestone_id, labels, repo_path, branch, due_date, ord, github_ref, manual_lock, closed_at, created_at, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL)",
                 params![
                     item.id, item.title, item.body, item.status, item.priority,
                     item.milestone_id, labels, item.repo_path, item.branch, item.due_date,
-                    item.order, item.github_ref, item.manual_lock, item.created_at, item.updated_at,
+                    item.order, item.github_ref, item.manual_lock, item.closed_at,
+                    item.created_at, item.updated_at,
                 ],
             )
             .map_err(|e| format!("导入 item 失败: {e}"))?;
@@ -779,6 +837,39 @@ mod tests {
         store
             .list_items(&ItemFilter { status: Some(status.into()), ..Default::default() })
             .unwrap()
+    }
+
+    #[test]
+    fn closed_at_tracks_last_column_transitions() {
+        let store = PmStore::open_memory();
+        let a = store.create_item(&new_item("a", Some("todo"))).unwrap();
+        assert_eq!(a.closed_at, None);
+
+        // 拖进最后一列 → 打点
+        let a1 = store.move_item(&a.id, "done", None).unwrap();
+        assert!(a1.closed_at.is_some());
+        assert_eq!(store.get_active_item(&a.id).unwrap().closed_at, a1.closed_at);
+
+        // 最后一列内移动：closed_at 不动
+        let b = store.create_item(&new_item("b", Some("done"))).unwrap();
+        assert!(b.closed_at.is_some()); // 直接建在 done 也打点
+        let b1 = store.move_item(&b.id, "done", Some(&a.id)).unwrap();
+        assert_eq!(b1.closed_at, b.closed_at);
+
+        // 拖出最后一列 → 清空
+        let a2 = store.move_item(&a.id, "doing", None).unwrap();
+        assert_eq!(a2.closed_at, None);
+
+        // PUT 改状态进出 done 同样打点/清空
+        let c = store.create_item(&new_item("c", Some("todo"))).unwrap();
+        let c1 = store
+            .update_item(&Item { status: "done".into(), ..c.clone() })
+            .unwrap();
+        assert!(c1.closed_at.is_some());
+        let c2 = store
+            .update_item(&Item { status: "todo".into(), ..c1 })
+            .unwrap();
+        assert_eq!(c2.closed_at, None);
     }
 
     #[test]
@@ -822,7 +913,7 @@ mod tests {
         }
 
         let store = PmStore::open(&db).unwrap();
-        // v2 靠 guard 跳过 DDL 只补记账；v3 索引补齐
+        // v2 靠 guard 跳过 DDL 只补记账；v3 索引补齐；v4 ALTER 干净应用
         let mut versions: Vec<u32> = {
             let mut stmt = store
                 .conn
@@ -834,7 +925,7 @@ mod tests {
                 .collect()
         };
         versions.sort();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
         let indexes: i64 = store
             .conn
             .query_row(

@@ -75,6 +75,8 @@ export interface PmItem {
 	githubRef: string | null;
 	/** 人工拖动过的 GitHub 同步卡片：同步时字段仍刷新，但列位置不再自动迁移 */
 	manualLock: boolean;
+	/** 进入最后一列（done）的时间戳（unix 秒）；离开最后一列或老数据为 null */
+	closedAt?: number | null;
 	createdAt: number;
 	updatedAt: number;
 }
