@@ -62,6 +62,29 @@ pub fn pm_move_item(
         .move_item(&item_id, &to_status, before_item_id.as_deref())
 }
 
+/// 看板拖拽回写（#83）：把 item 关联的 GitHub issue 关闭（拖入 done）或重开
+/// （拖出 done）。只做 GitHub 侧 `PATCH state`，不动本地列——回写成功后前端继续
+/// 调 pm_move_item，closed_at 的「进最后一列打点、离开清空」与本地拖动、同步自动
+/// 迁移共用同一套逻辑（store::move_item），回写失败则本地列一并回滚。
+/// 网络阶段不持 pm 锁；失败把 GitHub 原始错误原样返回，前端 toast 展示。
+#[tauri::command]
+pub async fn pm_set_github_issue_state(
+    state: State<'_, AppState>,
+    item_id: String,
+    closed: bool,
+) -> Result<(), String> {
+    let gref = {
+        let store = state.pm.lock().unwrap();
+        store.github_ref_of(&item_id)?
+    };
+    let gref = gref.ok_or_else(|| "任务未关联 GitHub issue，无法回写".to_string())?;
+    let r = model::parse_github_ref(&gref).ok_or_else(|| format!("无法解析 GitHub 引用: {gref}"))?;
+    let token = crate::github::ensure_token(&state)?;
+    crate::github::set_issue_state(&state.http, &token, &r.owner, &r.repo, r.number, closed)
+        .await?;
+    Ok(())
+}
+
 /// 软删除：item 保留 tombstone，不再出现在列表
 #[tauri::command]
 pub fn pm_delete_item(state: State<'_, AppState>, item_id: String) -> Result<(), String> {

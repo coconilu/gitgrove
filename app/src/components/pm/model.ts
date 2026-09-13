@@ -284,6 +284,76 @@ export function computeMove(
 	return { toStatus: over.status, beforeItemId: over.id };
 }
 
+// ---- 拖拽回写（#83）：跨进/跨出最后一列的 GitHub 卡片改 issue state ----
+
+export interface WritebackPlan {
+	/** true = 关闭 issue（拖入 done），false = 重开（拖出 done） */
+	closed: boolean;
+}
+
+/**
+ * 这次拖拽是否需要回写 GitHub：只有「有合法 githubRef 且跨列进/出最后一列」才回写。
+ * 列内排序、非 done 列之间的移动、本地卡片（无 githubRef）、老数据里的非法 ref
+ * 一律返回 null。manualLock 不参与判断——锁定只约束同步引擎的自动迁移，
+ * 手动拖拽始终生效。
+ */
+export function writebackPlan(
+	item: PmItem,
+	toStatus: string,
+	doneId: string,
+): WritebackPlan | null {
+	if (!item.githubRef || !parseGithubRef(item.githubRef)) return null;
+	if (item.status === toStatus) return null;
+	if (toStatus === doneId) return { closed: true };
+	if (item.status === doneId) return { closed: false };
+	return null;
+}
+
+export interface PmMoveDeps {
+	setIssueState(itemId: string, closed: boolean): Promise<void>;
+	moveItem(
+		itemId: string,
+		toStatus: string,
+		beforeItemId: string | null,
+	): Promise<PmItem>;
+	updateItem(item: PmItem): Promise<PmItem>;
+}
+
+export type PmMoveOutcome =
+	| { ok: true; item: PmItem }
+	| { ok: false; stage: "writeback" | "move"; error: string };
+
+/**
+ * 拖拽落库编排：先回写 GitHub（拖入 done → close、拖出 → reopen），成功后再
+ * pm_move_item —— closedAt 的打点/清空因此与本地拖动、同步迁移共用一条路径。
+ * 回写失败不做任何本地移动（调用方回滚乐观列 + toast GitHub 原始错误）；
+ * 拖动 GitHub 卡片跨列照旧置 manualLock。
+ */
+export async function performMove(
+	deps: PmMoveDeps,
+	prev: PmItem,
+	toStatus: string,
+	beforeItemId: string | null,
+	doneId: string,
+): Promise<PmMoveOutcome> {
+	const plan = writebackPlan(prev, toStatus, doneId);
+	if (plan) {
+		try {
+			await deps.setIssueState(prev.id, plan.closed);
+		} catch (e) {
+			return { ok: false, stage: "writeback", error: String(e) };
+		}
+	}
+	try {
+		let item = await deps.moveItem(prev.id, toStatus, beforeItemId);
+		if (prev.githubRef && !prev.manualLock && prev.status !== toStatus)
+			item = await deps.updateItem({ ...item, manualLock: true });
+		return { ok: true, item };
+	} catch (e) {
+		return { ok: false, stage: "move", error: String(e) };
+	}
+}
+
 // ---- 数据加载编排（#61）：本地数据先渲染，GitHub 同步后台化 ----
 
 /** 前端同步超时兜底：后端网络有界（connect 5s / 请求 10s），此处再兜住 gh CLI、

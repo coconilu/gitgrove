@@ -75,6 +75,13 @@ export const pmUpdateStatuses = (statuses: PmStatusDef[]) =>
 /** GitHub issue → 看板同步（手动触发）：upsert + 自动迁移；无 GitHub provider 的项目会报错 */
 export const pmSyncGithub = (projectId: string) =>
 	invoke<PmSyncResult>("pm_sync_github", { projectId });
+/**
+ * 拖拽回写（#83）：把 item 关联的 GitHub issue 关闭 / 重开。
+ * 只改 GitHub 侧 state，本地列仍由 pmMoveItem 落库（closedAt 同一套打点逻辑）；
+ * 失败抛出的是 GitHub 原始错误文本。
+ */
+export const pmSetGithubIssueState = (itemId: string, closed: boolean) =>
+	invoke<void>("pm_set_github_issue_state", { itemId, closed });
 
 // ---- clone / 项目 ----
 export const checkCloneTarget = (repo: string) =>

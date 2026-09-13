@@ -17,11 +17,13 @@ import {
 	issueUrl,
 	milestoneProgress,
 	parseGithubRef,
+	performMove,
 	pmSyncWithTimeout,
 	repoName,
 	sortMilestones,
 	syncBannerFromOutcome,
 	todayString,
+	writebackPlan,
 } from "../src/components/pm/model.ts";
 
 const item = (over) => ({
@@ -397,4 +399,137 @@ test("doneColumnView：默认只留最近 20 张（倒序），展开是连续�
 		visible: doneRecencySort(done.slice(0, 20)),
 		hiddenCount: 0,
 	});
+});
+
+// ---- 拖拽回写（#83）：拖入 done → close，拖出 → reopen ----
+
+const DONE_ID = "done";
+const gh = (over) => item({ githubRef: "o/r#7", ...over });
+
+test("writebackPlan：跨进 done 关闭、拖出 done 重开，其余拖拽不回写", () => {
+	assert.deepEqual(writebackPlan(gh({ status: "doing" }), "done", DONE_ID), {
+		closed: true,
+	});
+	assert.deepEqual(writebackPlan(gh({ status: "done" }), "todo", DONE_ID), {
+		closed: false,
+	});
+	// 非 done 列之间的移动 / done 列内排序 / 本地卡片（无 githubRef）
+	assert.equal(writebackPlan(gh({ status: "todo" }), "doing", DONE_ID), null);
+	assert.equal(writebackPlan(gh({ status: "done" }), "done", DONE_ID), null);
+	assert.equal(writebackPlan(item({ status: "todo" }), "done", DONE_ID), null);
+	// 老数据/手改字段里的非法 ref 不回写（不让格式错误变成一次网络调用）
+	assert.equal(
+		writebackPlan(item({ githubRef: "o/r", status: "todo" }), "done", DONE_ID),
+		null,
+	);
+});
+
+test("writebackPlan：manualLock 只挡同步自动迁移，手动拖拽照样回写", () => {
+	assert.deepEqual(
+		writebackPlan(gh({ status: "todo", manualLock: true }), "done", DONE_ID),
+		{ closed: true },
+	);
+	assert.deepEqual(
+		writebackPlan(gh({ status: "done", manualLock: true }), "todo", DONE_ID),
+		{ closed: false },
+	);
+});
+
+/** mock 版 api：记录调用顺序，便于断言「先回写、后落库」 */
+function moveDeps(over = {}) {
+	const calls = [];
+	const deps = {
+		setIssueState: async (id, closed) => {
+			calls.push(["state", id, closed]);
+		},
+		moveItem: async (id, toStatus, beforeItemId) => {
+			calls.push(["move", id, toStatus, beforeItemId]);
+			return item({ id, status: toStatus, githubRef: "o/r#7" });
+		},
+		updateItem: async (it) => {
+			calls.push(["lock", it.id]);
+			return { ...it, manualLock: true };
+		},
+		...over,
+	};
+	return { calls, deps };
+}
+
+test("performMove：拖入 done 先 close 再落库，跨列的 GitHub 卡片置 manualLock", async () => {
+	const { calls, deps } = moveDeps();
+	const prev = gh({ id: "i1", status: "doing" });
+	const out = await performMove(deps, prev, "done", "i9", DONE_ID);
+	assert.deepEqual(calls, [
+		["state", "i1", true],
+		["move", "i1", "done", "i9"],
+		["lock", "i1"],
+	]);
+	assert.equal(out.ok, true);
+	assert.equal(out.item.manualLock, true);
+});
+
+test("performMove：拖出 done → reopen；本地卡片不回写也不置锁", async () => {
+	const { calls, deps } = moveDeps();
+	const out = await performMove(
+		deps,
+		gh({ id: "i2", status: "done" }),
+		"todo",
+		null,
+		DONE_ID,
+	);
+	assert.deepEqual(calls, [
+		["state", "i2", false],
+		["move", "i2", "todo", null],
+		["lock", "i2"],
+	]);
+	assert.equal(out.ok, true);
+
+	const local = moveDeps();
+	await performMove(
+		local.deps,
+		item({ id: "i3", status: "todo" }),
+		"doing",
+		null,
+		DONE_ID,
+	);
+	assert.deepEqual(local.calls, [["move", "i3", "doing", null]]);
+});
+
+test("performMove：回写失败不落本地移动，GitHub 原始错误原样带出", async () => {
+	const raw =
+		"GitHub API 403 Forbidden: Resource not accessible by personal access token";
+	const { calls, deps } = moveDeps({
+		setIssueState: async () => {
+			throw new Error(raw);
+		},
+	});
+	const out = await performMove(
+		deps,
+		gh({ id: "i1", status: "doing" }),
+		"done",
+		null,
+		DONE_ID,
+	);
+	assert.equal(out.ok, false);
+	assert.equal(out.stage, "writeback");
+	assert.ok(out.error.includes(raw), out.error);
+	assert.deepEqual(calls, []); // 回写失败 → 没有 move / 没有 manualLock PUT
+});
+
+test("performMove：移动失败归到 move 阶段（回写已成功）", async () => {
+	const { calls, deps } = moveDeps({
+		moveItem: async () => {
+			throw new Error("beforeItem 不在目标列 done");
+		},
+	});
+	const out = await performMove(
+		deps,
+		gh({ id: "i1", status: "doing" }),
+		"done",
+		null,
+		DONE_ID,
+	);
+	assert.equal(out.ok, false);
+	assert.equal(out.stage, "move");
+	assert.deepEqual(calls, [["state", "i1", true]]);
 });

@@ -206,6 +206,14 @@ impl Http {
     }
 }
 
+/// 错误体截断：按字符边界切，中文错误描述不会切出半个 UTF-8 字符导致 panic
+fn brief(text: &str) -> &str {
+    match text.char_indices().nth(300) {
+        Some((idx, _)) => &text[..idx],
+        None => text,
+    }
+}
+
 pub async fn gh_get(http: &Http, token: &str, path: &str, query: &[(&str, &str)]) -> Result<Value, String> {
     let url = format!("https://api.github.com{path}");
     let resp = http
@@ -220,32 +228,75 @@ pub async fn gh_get(http: &Http, token: &str, path: &str, query: &[(&str, &str)]
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
     if !status.is_success() {
-        return Err(format!("GitHub API {status}: {}", &text[..text.len().min(300)]));
+        return Err(format!("GitHub API {status}: {}", brief(&text)));
     }
     serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))
 }
 
 pub async fn gh_post(http: &Http, token: &str, path: &str, body: Value) -> Result<Value, String> {
+    gh_write(http, token, reqwest::Method::POST, path, &body).await
+}
+
+/// PATCH：局部更新（关闭/重开 issue 只改 state，不动其它字段）
+pub async fn gh_patch(http: &Http, token: &str, path: &str, body: Value) -> Result<Value, String> {
+    gh_write(http, token, reqwest::Method::PATCH, path, &body).await
+}
+
+async fn gh_write(
+    http: &Http,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
     let url = format!("https://api.github.com{path}");
+    // send() 的闭包是 Fn（直连失败可能换代理 client 再调一次），method 需 clone
     let resp = http
         .send(|c| {
-            c.post(&url)
+            c.request(method.clone(), &url)
                 .bearer_auth(token)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2022-11-28")
-                .json(&body)
+                .json(body)
         })
         .await?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
     if !status.is_success() {
-        return Err(format!("GitHub API {status}: {}", &text[..text.len().min(300)]));
+        return Err(format!("GitHub API {status}: {}", brief(&text)));
     }
     if text.trim().is_empty() {
         Ok(Value::Null)
     } else {
         serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))
     }
+}
+
+/// 关闭 / 重开 issue（看板拖拽回写用）：`PATCH /repos/{owner}/{repo}/issues/{number}`。
+/// 幂等——已关闭的 issue 再 PATCH state=closed 仍返回 200。
+pub async fn set_issue_state(
+    http: &Http,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    closed: bool,
+) -> Result<Value, String> {
+    let body = serde_json::json!({ "state": issue_state_value(closed) });
+    gh_patch(http, token, &issue_state_path(owner, repo, number), body).await
+}
+
+/// 关闭 → "closed"，重开 → "open"
+fn issue_state_value(closed: bool) -> &'static str {
+    if closed {
+        "closed"
+    } else {
+        "open"
+    }
+}
+
+fn issue_state_path(owner: &str, repo: &str, number: u64) -> String {
+    format!("/repos/{owner}/{repo}/issues/{number}")
 }
 
 #[derive(Serialize, Clone)]
@@ -291,7 +342,7 @@ async fn fetch_viewer(http: &Http, token: &str, source: &str) -> Result<AuthStat
     let project_scope = has_project_scope(resp.headers());
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
     if !status.is_success() {
-        return Err(format!("GitHub API {status}: {}", &text[..text.len().min(300)]));
+        return Err(format!("GitHub API {status}: {}", brief(&text)));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))?;
     Ok(AuthState2 {
@@ -774,6 +825,34 @@ pub async fn workflow_details(state: State<'_, AppState>, owner: String, repo: S
     if !response.status().is_success() { return Err(format!("无法读取流程配置: HTTP {}", response.status())); }
     let source = response.text().await.map_err(|e| format!("读取流程配置失败: {e}"))?;
     parse_workflow_details(&source, default_branch.into())
+}
+
+#[cfg(test)]
+mod writeback_tests {
+    use super::{brief, issue_state_path, issue_state_value};
+
+    #[test]
+    fn close_maps_to_closed_and_reopen_to_open() {
+        assert_eq!(issue_state_value(true), "closed");
+        assert_eq!(issue_state_value(false), "open");
+    }
+
+    #[test]
+    fn issue_state_path_targets_repo_issue() {
+        assert_eq!(
+            issue_state_path("coconilu", "gitgrove", 83),
+            "/repos/coconilu/gitgrove/issues/83"
+        );
+    }
+
+    #[test]
+    fn brief_truncates_on_char_boundary() {
+        assert_eq!(brief("short"), "short");
+        let long = "错".repeat(400);
+        let cut = brief(&long);
+        assert_eq!(cut.chars().count(), 300);
+        assert!(long.starts_with(cut));
+    }
 }
 
 #[cfg(test)]
