@@ -357,6 +357,43 @@ fn connection_owner(client: SocketAddr, server: SocketAddr) -> Result<Option<u32
     }
 }
 
+// 回环端口的占用者（DSH 清理用）：只认 LISTENING 行，且只认回环地址。
+// GitGrove 只通过回环访问本地服务，端口记录里不存在对外监听。
+pub(super) fn loopback_listener(port: u16) -> Result<Option<u32>, String> {
+    const LISTEN: u32 = 2;
+    let rows = tcp_rows::<MIB_TCPROW_OWNER_PID>(
+        AF_INET as u32,
+        std::mem::offset_of!(MIB_TCPTABLE_OWNER_PID, table),
+    )?;
+    Ok(rows
+        .into_iter()
+        .find(|row| {
+            row.dwState == LISTEN
+                && Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes()) == Ipv4Addr::LOCALHOST
+                && u16::from_be(row.dwLocalPort as u16) == port
+        })
+        .map(|row| row.dwOwningPid))
+}
+
+// 仅当该进程属于当前 Windows 用户时返回镜像名。DSH 清理据此确认「端口占用者
+// 是当前用户自己起的进程」；打不开句柄（已退出、受保护、别的用户）一律返回
+// None，调用方据此放弃清理。
+pub(super) fn same_user_image_name(pid: u32) -> Result<Option<String>, String> {
+    if pid == 0 {
+        return Ok(None);
+    }
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    // 句柄必须活到两次查询结束：它同时钉住进程身份，避免 PID 复用。
+    let _process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    if process_user(unsafe { GetCurrentProcess() })? != process_user(raw)? {
+        return Ok(None);
+    }
+    Ok(Some(process_image(raw)?))
+}
+
 fn tcp_rows<T: Copy>(family: u32, offset: usize) -> Result<Vec<T>, String> {
     let mut size = 0;
     unsafe {

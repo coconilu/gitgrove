@@ -9,8 +9,6 @@ on:
         default: patch
         type: choice
         options: [patch, minor, major, none]
-  issues:
-    types: [closed]
 
 permissions:
   contents: read
@@ -48,10 +46,8 @@ jobs:
   version:
     needs: prepare
     if: >-
-      always() && !cancelled() && (
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.bump == 'none' || needs.prepare.result == 'success')) ||
-      github.event_name == 'issues')
+      always() && !cancelled() && github.event_name == 'workflow_dispatch' &&
+      (inputs.bump == 'none' || needs.prepare.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -206,7 +202,8 @@ jobs:
           target_commitish: ${{ needs.version.outputs.sha }}
           draft: true
           fail_on_unmatched_files: true
-          # issue 触发的构建标记为 prerelease，避免抢占 releases/latest（updater 端点）
+          # prerelease 由 release-target.mjs 输出；当前只有手动 dispatch 触发，恒为 false。
+          # 保留透传：出现预发布入口时发布步骤无需改动，且预发布不会抢占 releases/latest
           prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
           files: |
             dist-release/windows/*.exe
