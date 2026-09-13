@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.1（2026-09-13）
+
+- Merge pull request #85 from coconilu/chore/tower-merge-m28-m29
+- Merge branch 'feat/release-dsh-84'
+- fix(dsh): 认证链接已交付的实例跨重启受保护（r1 R1）
+- docs(release): 修正发版时长基准表（r1 P2）
+- Merge branch 'feat/done-close-reopen-83'
+- fix(pm): 回写后落库失败用列尾重试一次 + 如实标注 closedAt 精度差异 (#83)
+- chore(release): 清掉 issues 预发布死分支与 prerelease 透传 (#84)
+- fix(release): 删 issues 触发器 + DSH 遗留实例保守清理 + 发版文档补齐 (#84)
+- feat(pm): 看板拖拽回写 done↔close / 拖出 reopen (#83)
+
 ## v1.3.0（2026-09-12）
 
 - Merge pull request #81 from coconilu/chore/tower-merge-m27
