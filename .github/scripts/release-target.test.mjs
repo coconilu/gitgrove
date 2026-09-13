@@ -36,28 +36,25 @@ test("手动升级版本等待自动准备结果，随后发布合并提交；no
 		),
 	);
 });
-test("完成 Issue 出隔离的预发布，取消 Issue 不发版", () => {
+test("已删除的 issues 触发器不再被接受，发布目标只有提交号", () => {
 	const event = {
 		repository,
 		action: "closed",
 		issue: { number: 7, state_reason: "completed" },
 	};
-	assert.deepEqual(releaseTarget("issues", event, sha), {
-		sha,
-		prerelease: true,
-		issue: 7,
-	});
-	assert.equal(
+	assert.throws(() => releaseTarget("issues", event, sha));
+	assert.deepEqual(
 		releaseTarget(
-			"issues",
-			{ ...event, issue: { state_reason: "not_planned" } },
+			"workflow_dispatch",
+			{ repository, inputs: { bump: "none" } },
 			sha,
+			"refs/heads/master",
 		),
-		null,
+		{ sha },
 	);
-	assert.equal(releaseTag("1.2.3", "1.2.3", 7), "v1.2.3-issue7");
-	assert.equal(releaseTag("1.2.3", "1.2.3", null), "v1.2.3");
+	assert.equal(releaseTag("1.2.3", "1.2.3"), "v1.2.3");
 	assert.throws(() => releaseTag("1.2.3", "1.2.4"));
+	assert.throws(() => releaseTag("1.2", "1.2"));
 });
 test("只接受 GitHub Actions 最新的 check 成功，不接受旧成功/第三方同名/跳过", () => {
 	const success = {

@@ -356,6 +356,11 @@ impl PmStore {
             .map_err(|_| format!("item {id} 不存在或已删除"))
     }
 
+    /// 取 item 的 githubRef（看板拖拽回写用）；item 不存在/已删返回错误
+    pub fn github_ref_of(&self, id: &str) -> Result<Option<String>, String> {
+        Ok(self.get_active_item(id)?.github_ref)
+    }
+
     /// 列内最大排序键（排除指定 item 与 tombstone）
     pub(crate) fn last_key_in_column(&self, status: &str, exclude_id: Option<&str>) -> Result<Option<String>, String> {
         self.conn
@@ -837,6 +842,24 @@ mod tests {
         store
             .list_items(&ItemFilter { status: Some(status.into()), ..Default::default() })
             .unwrap()
+    }
+
+    #[test]
+    fn github_ref_of_reads_ref_and_rejects_unknown_item() {
+        let store = PmStore::open_memory();
+        let a = store.create_item(&new_item("a", Some("todo"))).unwrap();
+        assert_eq!(store.github_ref_of(&a.id).unwrap(), None);
+        store
+            .conn
+            .execute(
+                "UPDATE items SET github_ref = 'o/r#7' WHERE id = ?1",
+                params![a.id],
+            )
+            .unwrap();
+        assert_eq!(store.github_ref_of(&a.id).unwrap().as_deref(), Some("o/r#7"));
+        assert!(store.github_ref_of("nope").is_err());
+        store.delete_item(&a.id).unwrap();
+        assert!(store.github_ref_of(&a.id).is_err());
     }
 
     #[test]

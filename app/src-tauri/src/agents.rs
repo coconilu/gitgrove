@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{git, store};
 
@@ -435,6 +436,26 @@ fn server_command(executable: &Path, home: &Path, port: u16) -> Command {
     command
 }
 
+// 子进程经 .cmd shim / npx 启动时（dsh 的情况）：仅 kill 顶层会把 npm/node
+// 孙进程留成孤儿继续占用端口。Windows 先用 taskkill /T /F 清掉整棵进程树——
+// 树必须在 shim 仍存活时枚举，故调用方保证它先于 kill() 执行。Job Object
+// 更彻底，但对常量参数的短生命周期进程，taskkill 已足够（与本仓 NSIS hooks
+// 的 KILL_ON_JOB_CLOSE 思路同源）。
+fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let taskkill = PathBuf::from(root).join("System32/taskkill.exe");
+        let _ = git::new_cmd(&taskkill.to_string_lossy())
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
 struct StartedServer(Option<Child>);
 impl StartedServer {
     /// 仅当子进程确认仍存活时才允许按 PID 清理进程树：启动即退（已回收）或
@@ -451,21 +472,7 @@ impl Drop for StartedServer {
             let _ = child.wait();
             return;
         }
-        // dsh 经 .cmd shim / npx 启动：child 是 cmd.exe 包装层，仅 kill 会把
-        // npm/node 孙进程留成孤儿继续占用端口。Windows 先用 taskkill /T /F
-        // 清掉整棵进程树——树必须在 shim 仍存活时枚举，故先于 kill() 执行；
-        // 再 kill+wait 收尸。Job Object 更彻底，但对常量参数的短生命周期
-        // 进程，taskkill 已足够（与本仓 NSIS hooks 的 KILL_ON_JOB_CLOSE 思路同源）。
-        #[cfg(windows)]
-        if let Some(root) = std::env::var_os("SystemRoot") {
-            let taskkill = PathBuf::from(root).join("System32/taskkill.exe");
-            let _ = git::new_cmd(&taskkill.to_string_lossy())
-                .args(["/T", "/F", "/PID", &child.id().to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+        kill_process_tree(child.id());
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -606,51 +613,134 @@ fn dsh_command(executable: &Path, port: u16) -> Command {
 // DSH 默认端口（用户手动 `dsh web` 时的监听口）；本应用 spawn 时避开它选空闲端口。
 const DSH_DEFAULT_PORT: u16 = 3080;
 
+// 记录最多保留的实例条数。
+const DSH_RECORD_LIMIT: usize = 8;
+
 // 认证 URL 捕获的有界等待（生产值）：URL 行在服务绑定后才打印，正常秒级
 // 出现；就绪后再给足慢机余量，超时则回退裸地址（测试传更短值加速）。
 const DSH_URL_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
-// DSH 没有实例注册表（kimi 有 server/instances）：复用只能依据本应用历史
-// spawn 时记录的端口与默认端口。记录中的端口来自本应用发起的 dsh，且 TCP
-// 就绪判定本就只用端口探测（进程名不可靠），残余的误指向风险接受并在
-// dsh_first_live_port 限制为仅回环。
+// DSH 没有实例注册表（kimi 有 server/instances）：复用与本应用自己起的实例
+// 清理只能依据 spawn 时记录的端口与端口占用者 PID。记录里的端口都来自本应用
+// 发起的 dsh，并在启动时就核对过占用者（#84 据此只清理自己留下的实例）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DshRecordEntry {
+    port: u16,
+    /// 启动时核对到的监听进程 PID；0 表示旧版本记录（只有端口）或当时核对不出来。
+    pid: u32,
+    /// 认证链接已交给浏览器：它的 cookie 在浏览器里有效，无凭据探测到的 401
+    /// 不代表不可用；跨重启也必须放过，否则重启后会误杀用户正在用的实例。
+    opened: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum DshRecordItem {
+    /// v1.2.6 及更早的格式：数组里直接是端口。
+    Port(u16),
+    Owned {
+        port: u16,
+        pid: u32,
+        #[serde(default)]
+        opened: bool,
+    },
+}
+
 fn dsh_port_record() -> PathBuf {
     store::app_data_dir().join("dsh-web-ports.json")
 }
 
-fn dsh_read_ports(record: &Path) -> Vec<u16> {
+fn dsh_read_entries(record: &Path) -> Vec<DshRecordEntry> {
     std::fs::read_to_string(record)
         .ok()
-        .and_then(|text| serde_json::from_str::<Vec<u16>>(&text).ok())
+        .and_then(|text| serde_json::from_str::<Vec<DshRecordItem>>(&text).ok())
         .unwrap_or_default()
         .into_iter()
-        .filter(|port| (1..=u16::MAX).contains(port))
-        .take(8)
+        .map(|item| match item {
+            DshRecordItem::Port(port) => DshRecordEntry {
+                port,
+                pid: 0,
+                opened: false,
+            },
+            DshRecordItem::Owned { port, pid, opened } => DshRecordEntry { port, pid, opened },
+        })
+        .filter(|entry| entry.port != 0)
+        .take(DSH_RECORD_LIMIT)
         .collect()
 }
 
-fn dsh_record_port(record: &Path, port: u16) {
-    let mut ports = dsh_read_ports(record);
-    ports.retain(|existing| *existing != port);
-    ports.insert(0, port);
-    ports.truncate(8);
-    if let Ok(text) = serde_json::to_string(&ports) {
+fn dsh_write_entries(record: &Path, entries: &[DshRecordEntry]) {
+    let items: Vec<DshRecordItem> = entries
+        .iter()
+        .map(|entry| DshRecordItem::Owned {
+            port: entry.port,
+            pid: entry.pid,
+            opened: entry.opened,
+        })
+        .collect();
+    if let Ok(text) = serde_json::to_string(&items) {
         let _ = std::fs::write(record, text);
     }
+}
+
+// 认证链接交付浏览器后落盘标记：该实例的 cookie 在浏览器里（30 天），探测到的
+// 401 只说明本应用没有凭据，不代表用户打不开——清理必须放过它。记录里一定有
+// 这个端口（spawn 成功即写入）；写不出记录时不新建条目，那一次打开就少了保护。
+fn dsh_mark_opened(record: &Path, port: u16) {
+    let mut entries = dsh_read_entries(record);
+    match entries.iter_mut().find(|entry| entry.port == port) {
+        Some(entry) if !entry.opened => entry.opened = true,
+        _ => return,
+    }
+    dsh_write_entries(record, &entries);
+}
+
+fn dsh_record_port(record: &Path, port: u16, pid: u32) {
+    let mut entries = dsh_read_entries(record);
+    entries.retain(|existing| existing.port != port);
+    // 新实例没有浏览器 cookie，opened 从 false 开始（同一端口的上一条记录作废）。
+    entries.insert(
+        0,
+        DshRecordEntry {
+            port,
+            pid,
+            opened: false,
+        },
+    );
+    entries.truncate(DSH_RECORD_LIMIT);
+    dsh_write_entries(record, &entries);
 }
 
 // 复用候选顺序：默认端口（用户手动 dsh web 的监听口）优先于本应用历史
 // 记录。历史记录可能指向遗留实例——其认证 token 已随旧进程消亡、浏览器
 // 也没有它的认证 cookie（#71：:3080 在手却打开了 54964 遗留实例的认证页）；
-// 而用户手动实例的浏览器会话通常已持有 cookie，裸地址即可进入。
-fn dsh_reuse_candidates(record: &Path) -> Vec<u16> {
+// 而用户手动实例的浏览器会话通常已持有 cookie，裸地址即可进入。清理过一遍
+// 后仍留在记录里的，只有健康应答（可复用）的实例。
+fn dsh_reuse_candidates(entries: &[DshRecordEntry]) -> Vec<u16> {
     let mut candidates = vec![DSH_DEFAULT_PORT];
-    for port in dsh_read_ports(record) {
-        if !candidates.contains(&port) {
-            candidates.push(port);
+    for entry in entries {
+        if !candidates.contains(&entry.port) {
+            candidates.push(entry.port);
         }
     }
     candidates
+}
+
+// 端口占用者核对只在 Windows 有实现（DSH 图形界面入口同样只在 Windows 启用）；
+// 其它平台返回 None，清理退化为仅删记录、绝不动进程。
+#[cfg(windows)]
+fn dsh_listener_pid(port: u16) -> Option<u32> {
+    let pid = transport::loopback_listener(port).ok().flatten()?;
+    // 端口可能被别的程序或别的用户的进程占着：镜像须为 node.exe（dsh 的运行体，
+    // .cmd shim 与 npx 最终都落到它），且进程属于当前用户，才认作本应用的实例。
+    let image = transport::same_user_image_name(pid).ok().flatten()?;
+    let name = Path::new(&image).file_name()?.to_string_lossy().into_owned();
+    name.eq_ignore_ascii_case("node.exe").then_some(pid)
+}
+
+#[cfg(not(windows))]
+fn dsh_listener_pid(_port: u16) -> Option<u32> {
+    None
 }
 
 async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
@@ -665,6 +755,155 @@ async fn dsh_first_live_port(candidates: Vec<u16>) -> Option<u16> {
         }
     }
     None
+}
+
+// 无凭据的健康探测：dsh 的认证栅栏（#71 已核对源码 packages/client/connection/
+// src/browser-auth.ts）在没有认证 cookie 时对根路径返回 401。本应用不读 secret、
+// 不伪造 cookie，只发一个不带任何凭据的 GET，按状态行判断实例是否可用。
+const DSH_HEALTH_TIMEOUT: Duration = Duration::from_millis(700);
+const DSH_STATUS_HEAD_LIMIT: usize = 512;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DshHealth {
+    /// 2xx/3xx：无需认证即可使用，保留复用。
+    Serving,
+    /// 401/403：dsh 存活但要求认证 cookie，本应用拿不到——#84 的僵尸实例。
+    AuthGate,
+    /// 监听存在但不应答 HTTP，或返回其它状态码：异常实例。
+    Broken,
+    /// 端口没有监听。
+    Dead,
+}
+
+fn dsh_health_of_status_line(line: &str) -> DshHealth {
+    let code = line
+        .strip_prefix("HTTP/")
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+    match code {
+        Some(200..=399) => DshHealth::Serving,
+        Some(401 | 403) => DshHealth::AuthGate,
+        _ => DshHealth::Broken,
+    }
+}
+
+async fn dsh_health(port: u16) -> DshHealth {
+    let Ok(Ok(mut stream)) = tokio::time::timeout(
+        DSH_HEALTH_TIMEOUT,
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    else {
+        return DshHealth::Dead;
+    };
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    );
+    if tokio::time::timeout(DSH_HEALTH_TIMEOUT, stream.write_all(request.as_bytes()))
+        .await
+        .is_err()
+    {
+        return DshHealth::Broken;
+    }
+    // 只读状态行（封顶 512B）：正文可能很大或流式，读它与判定无关。
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 64];
+    while head.len() < DSH_STATUS_HEAD_LIMIT && !head.contains(&b'\n') {
+        match tokio::time::timeout(DSH_HEALTH_TIMEOUT, stream.read(&mut chunk)).await {
+            Ok(Ok(read)) if read > 0 => head.extend_from_slice(&chunk[..read]),
+            _ => break,
+        }
+    }
+    let head = String::from_utf8_lossy(&head);
+    let line = head.split(['\r', '\n']).next().unwrap_or_default();
+    if line.is_empty() {
+        DshHealth::Broken
+    } else {
+        dsh_health_of_status_line(line)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DshCleanup {
+    /// 健康可复用：记录与进程都保留。
+    Keep,
+    /// 只删掉这条记录：端口已无监听、换了主人或占用者身份核对不出来。
+    Forget,
+    /// 记录过、核对为本实例、健康检查也失败：按 PID 清进程树并删记录。
+    Kill(u32),
+}
+
+// 纯决策，副作用由调用方执行。三条同时成立才清理：本应用记录过这个端口 +
+// 端口占用者是本用户的 node 进程（dsh 的运行体）+ 健康检查失败。任何一条
+// 不成立都只删记录、绝不动进程。
+fn dsh_cleanup_decision(
+    entry: DshRecordEntry,
+    health: DshHealth,
+    owner: Option<u32>,
+) -> DshCleanup {
+    if health == DshHealth::Dead {
+        return DshCleanup::Forget;
+    }
+    let Some(owner) = owner else {
+        return DshCleanup::Forget;
+    };
+    if entry.pid != 0 && entry.pid != owner {
+        // 记录里的实例已退出、端口换了主人：不是本应用起的那个进程。
+        return DshCleanup::Forget;
+    }
+    // pid=0 只有 v1.2.6 及更早的记录会给出（那时记录不带 PID）：判据退化为
+    // 「占用者是本用户的 node 进程 + 健康检查失败」——正是 #84 要清的遗留实例，
+    // 因此保留这条路径；写回时补上核对到的 PID（可进一步收紧）留待后续。
+    match health {
+        DshHealth::Serving => DshCleanup::Keep,
+        _ => DshCleanup::Kill(owner),
+    }
+}
+
+const DSH_CLEANUP_TIMEOUT: Duration = Duration::from_secs(8);
+
+// 清理本应用记录过的 DSH 实例：健康检查失败的（认证栅栏 / 异常应答）按 PID
+// 清掉，记录里只留仍健康可复用的、默认端口那条、以及认证链接已交付浏览器的
+// 实例。返回清理后的记录。
+async fn dsh_cleanup(record: &Path, entries: &[DshRecordEntry]) -> Vec<DshRecordEntry> {
+    let mut kept = Vec::new();
+    for entry in entries {
+        // 默认端口是用户手动 dsh web 的监听口，opened 的实例认证链接已交付浏览器
+        // （cookie 可用）：两者都不探测、不清理——探测它们的 401 只反映本应用没有
+        // 凭据，据此清理会误杀用户正在用的实例。
+        if entry.port == DSH_DEFAULT_PORT || entry.opened {
+            kept.push(*entry);
+            continue;
+        }
+        let health = dsh_health(entry.port).await;
+        let owner = if health == DshHealth::Dead {
+            None
+        } else {
+            dsh_listener_pid(entry.port)
+        };
+        match dsh_cleanup_decision(*entry, health, owner) {
+            DshCleanup::Keep => kept.push(*entry),
+            DshCleanup::Forget => {}
+            DshCleanup::Kill(pid) => kill_process_tree(pid),
+        }
+    }
+    if kept.len() != entries.len() {
+        dsh_write_entries(record, &kept);
+    }
+    kept
+}
+
+// 清理是打开路径上的前置步骤，整体设上限：超时按原记录继续（复用与新建两条
+// 路都还能走通），不写回半清理状态。
+async fn dsh_cleanup_bounded(record: &Path) -> Vec<DshRecordEntry> {
+    let entries = dsh_read_entries(record);
+    if entries.is_empty() {
+        return entries;
+    }
+    match tokio::time::timeout(DSH_CLEANUP_TIMEOUT, dsh_cleanup(record, &entries)).await {
+        Ok(kept) => kept,
+        Err(_) => entries,
+    }
 }
 
 const DSH_READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -893,8 +1132,15 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             // 本会话曾以认证链接打开过），没有 cookie 时 dsh 返回 401 认证
             // 页，由返回文案给出处理办法。不做读取 secret 伪造 cookie 等
             // 扩大化方案。
+            //
+            // 打开前先做一次保守清理（#84）：本应用记录过的端口若健康检查失败
+            // （无 cookie 的 401 认证栅栏 / 不应答），那是自己留下的、token 已
+            // 不可得的遗留实例，按占用者 PID 清掉，让本次打开走带 token 的新实例；
+            // 用户手动起的实例（默认端口或不在记录里）、以及认证链接已交付浏览器
+            // 的实例（记录里 opened）一律不动。
             let record = dsh_port_record();
-            if let Some(port) = dsh_first_live_port(dsh_reuse_candidates(&record)).await {
+            let reusable = dsh_cleanup_bounded(&record).await;
+            if let Some(port) = dsh_first_live_port(dsh_reuse_candidates(&reusable)).await {
                 let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("constant URL");
                 open_gui_url(&url, agent)?;
                 return Ok(OpenReceipt {
@@ -904,7 +1150,7 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             let executable = dsh_executable()?;
             let (port, owned, authenticated) =
                 start_dsh(&executable, DSH_READY_TIMEOUT, DSH_URL_CAPTURE_TIMEOUT).await?;
-            dsh_record_port(&record, port);
+            dsh_record_port(&record, port, dsh_listener_pid(port).unwrap_or(0));
             // 常驻进程先转交后台再打开浏览器：浏览器失败时服务仍在，
             // 错误文案里的本地地址可手动访问。
             owned.retain();
@@ -914,6 +1160,8 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
                     let url =
                         Url::parse(&url).map_err(|_| "DSH 打印的认证链接无法解析，请重试。")?;
                     open_gui_url(&url, agent)?;
+                    // 认证链接已交给浏览器：这个实例跨重启都受保护，不再进入清理。
+                    dsh_mark_opened(&record, port);
                     Ok(OpenReceipt {
                         message:
                             "DSH 已启动，已通过认证链接打开本地服务。首次使用需在 DSH 界面选择项目目录。",
