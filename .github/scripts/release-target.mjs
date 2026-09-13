@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 export function releaseTarget(eventName, event, sha, ref, preparedSha) {
 	const branch = event.repository.default_branch;
 	let target = sha;
-	let prerelease = false;
 	if (eventName === "workflow_dispatch") {
 		if (ref !== "refs/heads/" + branch)
 			throw new Error("请从默认分支运行发布流程");
@@ -15,25 +14,17 @@ export function releaseTarget(eventName, event, sha, ref, preparedSha) {
 			if (!preparedSha) return null;
 			target = preparedSha;
 		}
-	} else if (eventName === "issues") {
-		if (event.action !== "closed" || event.issue.state_reason !== "completed")
-			return null;
-		prerelease = true;
 	} else {
 		throw new Error("不支持的发布事件: " + eventName);
 	}
 	if (!/^[a-f0-9]{40}$/.test(target)) throw new Error("无效的发布提交");
-	return {
-		sha: target,
-		prerelease,
-		issue: prerelease ? event.issue.number : null,
-	};
+	return { sha: target };
 }
 
-export function releaseTag(pkgVersion, tauriVersion, issue) {
+export function releaseTag(pkgVersion, tauriVersion) {
 	if (!/^\d+\.\d+\.\d+$/.test(pkgVersion) || pkgVersion !== tauriVersion)
 		throw new Error("package.json 与 tauri.conf.json 必须使用相同的有效版本号");
-	return "v" + pkgVersion + (issue ? "-issue" + issue : "");
+	return "v" + pkgVersion;
 }
 
 export function hasRequiredCheck(checks) {
@@ -90,7 +81,6 @@ async function main() {
 	const tag = releaseTag(
 		readAt("app/package.json").version,
 		readAt("app/src-tauri/tauri.conf.json").version,
-		target.issue,
 	);
 	const release = await github("/releases/tags/" + tag, true);
 	if (release && !release.draft) {
@@ -117,7 +107,6 @@ async function main() {
 		publish: true,
 		sha: target.sha,
 		tag,
-		prerelease: target.prerelease,
 	});
 	console.log("发布固定提交: " + target.sha + " -> " + tag);
 }

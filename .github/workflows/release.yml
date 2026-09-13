@@ -9,8 +9,6 @@ on:
         default: patch
         type: choice
         options: [patch, minor, major, none]
-  issues:
-    types: [closed]
 
 permissions:
   contents: read
@@ -48,10 +46,8 @@ jobs:
   version:
     needs: prepare
     if: >-
-      always() && !cancelled() && (
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.bump == 'none' || needs.prepare.result == 'success')) ||
-      github.event_name == 'issues')
+      always() && !cancelled() && github.event_name == 'workflow_dispatch' &&
+      (inputs.bump == 'none' || needs.prepare.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,7 +56,6 @@ jobs:
       publish: ${{ steps.target.outputs.publish }}
       sha: ${{ steps.target.outputs.sha }}
       tag: ${{ steps.target.outputs.tag }}
-      prerelease: ${{ steps.target.outputs.prerelease }}
     steps:
       # 校验脚本来自当前可信的默认分支；它只读取候选提交，不执行候选代码。
       - uses: actions/checkout@v5
@@ -206,8 +201,6 @@ jobs:
           target_commitish: ${{ needs.version.outputs.sha }}
           draft: true
           fail_on_unmatched_files: true
-          # issue 触发的构建标记为 prerelease，避免抢占 releases/latest（updater 端点）
-          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
           files: |
             dist-release/windows/*.exe
             dist-release/macos/*.dmg
@@ -217,10 +210,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
-          PRERELEASE: ${{ needs.version.outputs.prerelease }}
-        run: |
-          if [ "$PRERELEASE" = "true" ]; then
-            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
-          else
-            gh release edit "$RELEASE_TAG" --draft=false --latest
-          fi
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest

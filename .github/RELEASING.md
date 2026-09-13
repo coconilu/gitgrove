@@ -11,12 +11,14 @@
 
 正常流程无需手动批准版本 PR 的工作流、等待后点击合并，或再次触发 Release。
 
+触发方式只有手动 `workflow_dispatch`（即上面的入口）。历史触发器都已删除：`workflow_run`（master CI 成功后自动发版）与 `issues: [closed]`（关闭 issue 出预发布）都不存在了——手动 dispatch 覆盖全部发版路径，含 none 重试，保留自动触发器只会产出空跑（`version: success` / `build: skipped`）或与手动发版重复的运行。
+
 ## 自动完成的步骤
 
 ```mermaid
 flowchart LR
   A[选择增量并运行] --> B[同步版本和变更记录]
-  B --> C[版本提交 CI]
+  B --> C[版本提交 CI（master 已绿时不等）]
   C --> D[自动合并版本 PR]
   D --> E[合并提交 CI]
   E --> F[Windows / macOS 构建和签名]
@@ -26,6 +28,8 @@ flowchart LR
 版本 PR 仍作为版本修改记录保留，但由流程自动处理。只使用 GITHUB_TOKEN，不需要额外的 PAT、GitHub App 或仓库 auto-merge 开关，不调整现有主分支保护。
 
 流程等待版本 PR 对应的 pull_request CI；如 GitHub 将其置于 action_required，由发布任务在核对仓库、PR、提交与版本文件后调用官方审批接口，再等待该 PR 的真实检查通过。单独 workflow_dispatch 成功无法代替被审批阻塞的 PR 检查。合并后才显式 workflow_dispatch CI 验证新的主分支提交；构建、tag 与发布固定到这个已通过 CI 的 SHA。
+
+master HEAD 已有绿 CI 时走快速通道：版本 PR 只改版本文件、源码与主分支完全一致，于是跳过等待版本 PR 的完整 CI（原路径里这一项占了发版时长的大头），改为本地校验两个版本文件可解析且版本一致、`biome check` 通过，再按分支保护合并。分支保护要求版本 PR 自身的必需 check 时，直接合并会被拒（`Required status check ... is expected.`，HTTP 405）：命中该错误就回退为等待该 PR 的实际 CI，成功后再合并，不无脑重试合并、也不绕过保护。主分支 HEAD 没有绿 CI 时走原路径（等待版本 PR 的完整 CI）。读取 CI 状态需要 prepare 任务的 `checks: read` 权限。
 
 每次运行使用独立的 codex/release-<run-id> 分支，历史 release-v* 残留分支不会卡住新运行。同一次运行重试会验证并复用自己的版本分支 / PR，不覆盖其他分支；版本分支夹带源码或偏离自动生成的版本内容时停止。
 
@@ -38,10 +42,24 @@ flowchart LR
 | 构建或上传失败 | 使用 Re-run failed jobs 重试；无需再次增加版本号 |
 | 当前版本尚未发布但代码已合并 | 选择 none，发布通过 CI 的当前提交 |
 | 版本已正式发布 | 跳过，不覆盖用户已收到的安装包 |
-| Issue 以 completed 关闭 | 为事件的固定提交生成 vX.Y.Z-issueN 预发布，仍验证 CI |
-| Issue 以 not_planned 关闭 | 不构建预发布 |
 
-所有平台产物上传完成后才发布 Release 草稿。任何平台的安装包或 updater 签名缺失都会失败；预发布不占用 releases/latest。签名仍使用既有 TAURI_SIGNING_PRIVATE_KEY 和对应密码 Secret。
+所有平台产物上传完成后才发布 Release 草稿。任何平台的安装包或 updater 签名缺失都会失败。预发布入口随触发器一起删除：`release-target.mjs` 不再产出预发布标记，`version` job 也不再输出该字段，publish 总是把 Release 发布为正式 latest。签名仍使用既有 TAURI_SIGNING_PRIVATE_KEY 和对应密码 Secret。
+
+## 构建提速与时长基准
+
+- Rust 缓存：`ci.yml` 与 `release.yml` 的所有 Rust job（`cargo check`、Tauri build）都挂 Swatinem/rust-cache@v2。`workspaces` 指向 `app/src-tauri`（monorepo 里不是仓库根），`prefix-key` 按 workflow 区分：`gitgrove-CI-*` 与 `gitgrove-Release-*` 是互不相通的命名空间——CI 的 `cargo check` 只产出 rmeta，暖不了 release 的完整编译，因此首次发版仍是冷缓存。CI 侧另有 `save-if`，只有 master 的 run 写缓存，PR 分支不会把缓存池灌满。
+- prepare 快速通道：见上文「自动完成的步骤」，含分支保护 405 的回退路径。
+- 触发器精简：`workflow_run` 与 `issues: [closed]` 已从 `on:` 移除，只剩手动 dispatch（原因见开头）。
+
+时长基准（同仓库双平台发版实测，均取 run 的墙钟总时长）：
+
+| 场景 | 发版总时长 |
+| --- | --- |
+| 提速前（等版本 PR 完整 CI + 无 Rust 缓存） | 约 22min |
+| 冷缓存首版（Rust 依赖全量编译，v1.2.7） | 12.9min |
+| 热缓存（v1.2.8 / v1.2.9 / v1.3.0） | 10-14min（13.5 / 11.3 / 10.5min） |
+
+冷缓存首版偏慢属预期，不算回归；发布任务里 Windows 的 Tauri build 是剩余大头（约 4min），macOS 与它并行（约 2min），publish（生成 latest.json 并发布 Release）约 0.2min。单次发版耗时的大头是 prepare：它要等版本 PR 的 CI。三次热缓存发版里快速通道都先命中分支保护的 405 再回退等待该 CI（prepare 6-8min），因此「快速通道」目前与旧路径等时——只有默认分支已绿且分支保护不拦合并时它才真正省时。
 
 ## 维护说明
 

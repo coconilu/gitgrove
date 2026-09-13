@@ -760,18 +760,27 @@ fn dsh_output_url_extraction_matches_only_this_instance() {
 fn dsh_reuse_candidates_put_default_port_before_history() {
     let scratch = Scratch::new();
     let record = scratch.0.join("ports.json");
-    dsh_record_port(&record, 54964);
-    dsh_record_port(&record, 60001);
+    dsh_record_port(&record, 54964, 0);
+    dsh_record_port(&record, 60001, 0);
     // 默认端口在前：用户手动实例的浏览器会话通常已有认证 cookie，必须优先
     // 复用，不能被 token 已不可得的遗留记录遮蔽（#71：:3080 在手却打开
     // 54964 遗留实例的认证页）。历史记录本身最近优先。
-    assert_eq!(dsh_reuse_candidates(&record), vec![3080, 60001, 54964]);
+    assert_eq!(
+        dsh_reuse_candidates(&dsh_read_entries(&record)),
+        vec![3080, 60001, 54964]
+    );
     // 历史记录里出现默认端口时去重。
-    dsh_record_port(&record, 3080);
-    assert_eq!(dsh_reuse_candidates(&record), vec![3080, 60001, 54964]);
+    dsh_record_port(&record, 3080, 0);
+    assert_eq!(
+        dsh_reuse_candidates(&dsh_read_entries(&record)),
+        vec![3080, 60001, 54964]
+    );
     // 记录损坏时至少仍有默认端口。
     std::fs::write(&record, "not-json").unwrap();
-    assert_eq!(dsh_reuse_candidates(&record), vec![3080]);
+    assert_eq!(
+        dsh_reuse_candidates(&dsh_read_entries(&record)),
+        vec![3080]
+    );
 }
 
 #[tokio::test]
@@ -795,26 +804,76 @@ async fn dsh_first_live_port_finds_a_listener_on_the_default_port() {
 fn dsh_port_record_keeps_recent_dedupes_and_survives_corruption() {
     let scratch = Scratch::new();
     let record = scratch.0.join("ports.json");
+    let ports = |record: &Path| {
+        dsh_read_entries(record)
+            .iter()
+            .map(|entry| entry.port)
+            .collect::<Vec<u16>>()
+    };
     for port in [
         50001u16, 50002, 50003, 50004, 50005, 50006, 50007, 50008, 50009,
     ] {
-        dsh_record_port(&record, port);
+        dsh_record_port(&record, port, 0);
     }
     // 最近优先、最多保留 8 条：最早的 50001 被挤出。
     assert_eq!(
-        dsh_read_ports(&record),
+        ports(&record),
         vec![50009, 50008, 50007, 50006, 50005, 50004, 50003, 50002]
     );
-    // 重复记录提到最前而不是产生重复项。
-    dsh_record_port(&record, 50004);
-    assert_eq!(dsh_read_ports(&record)[0], 50004);
-    assert!(dsh_read_ports(&record)[1..].iter().all(|p| *p != 50004));
+    // 重复记录提到最前而不是产生重复项，并连同监听进程 PID 一起更新。
+    dsh_record_port(&record, 50004, 4242);
+    assert_eq!(
+        dsh_read_entries(&record)[0],
+        DshRecordEntry {
+            port: 50004,
+            pid: 4242,
+            opened: false
+        }
+    );
+    assert_eq!(ports(&record)[1..].iter().filter(|p| **p == 50004).count(), 0);
+    // 认证链接交付后落盘 opened：重启（重新读文件）仍然有效，之后同一端口上起
+    // 新实例时随新记录重置（新实例没有浏览器 cookie）。
+    dsh_mark_opened(&record, 50004);
+    assert!(dsh_read_entries(&record)[0].opened);
+    assert!(std::fs::read_to_string(&record).unwrap().contains("opened"));
+    dsh_record_port(&record, 50004, 777);
+    assert!(!dsh_read_entries(&record)[0].opened);
+    // 记录里没有的端口：标记不新建条目，只当次调用无效果。
+    dsh_mark_opened(&record, 50099);
+    assert!(ports(&record).iter().all(|port| *port != 50099));
     // 端口 0 不合法，读取时过滤。
     std::fs::write(&record, serde_json::to_string(&[0u16, 50001]).unwrap()).unwrap();
-    assert_eq!(dsh_read_ports(&record), vec![50001]);
+    assert_eq!(ports(&record), vec![50001]);
+    // v1.2.6 及更早的记录只有端口：读成 pid=0 / opened=false（清理时身份核对更保守）。
+    std::fs::write(&record, serde_json::to_string(&[54964u16, 60001]).unwrap()).unwrap();
+    assert_eq!(
+        dsh_read_entries(&record),
+        vec![
+            DshRecordEntry {
+                port: 54964,
+                pid: 0,
+                opened: false
+            },
+            DshRecordEntry {
+                port: 60001,
+                pid: 0,
+                opened: false
+            }
+        ]
+    );
+    // 只带 port/pid 的中间格式（无 opened）：读成 false，不视为已交付链接。
+    std::fs::write(&record, r#"[{"port":50002,"pid":7}]"#).unwrap();
+    assert_eq!(
+        dsh_read_entries(&record),
+        vec![DshRecordEntry {
+            port: 50002,
+            pid: 7,
+            opened: false
+        }]
+    );
     // 损坏文件自愈为空列表。
     std::fs::write(&record, "not-json").unwrap();
-    assert!(dsh_read_ports(&record).is_empty());
+    assert!(dsh_read_entries(&record).is_empty());
 }
 
 #[tokio::test]
@@ -838,6 +897,348 @@ async fn dsh_first_live_port_skips_dead_and_honors_candidate_order() {
         Some(live_port)
     );
     assert_eq!(dsh_first_live_port(vec![dead_port]).await, None);
+}
+
+#[test]
+fn dsh_health_of_status_line_separates_auth_gate_from_usable() {
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 200 OK"),
+        DshHealth::Serving
+    );
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 302 Found"),
+        DshHealth::Serving
+    );
+    // 无 cookie 的认证栅栏：dsh 存活，但本应用没有可用 token 与 cookie（#84 的目标实例）。
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 401 Unauthorized"),
+        DshHealth::AuthGate
+    );
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 403 Forbidden"),
+        DshHealth::AuthGate
+    );
+    // 其它状态码与非法状态行都算异常实例，绝不当作可用。
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 500 Internal Server Error"),
+        DshHealth::Broken
+    );
+    assert_eq!(
+        dsh_health_of_status_line("HTTP/1.1 404 Not Found"),
+        DshHealth::Broken
+    );
+    assert_eq!(dsh_health_of_status_line("HTTP/1.1"), DshHealth::Broken);
+    assert_eq!(dsh_health_of_status_line("HTTP/1.1 abc OK"), DshHealth::Broken);
+    assert_eq!(dsh_health_of_status_line("not-http"), DshHealth::Broken);
+}
+
+#[tokio::test]
+async fn dsh_health_probe_reads_only_the_status_line_of_a_real_socket() {
+    async fn serve(response: Option<&'static str>) -> u16 {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                if let Some(response) = response {
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+        port
+    }
+
+    let gate = serve(Some("HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n")).await;
+    assert_eq!(dsh_health(gate).await, DshHealth::AuthGate);
+    let serving = serve(Some("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
+    assert_eq!(dsh_health(serving).await, DshHealth::Serving);
+    // 接受连接却不回任何字节：异常实例，超时后必须判为不可用。
+    let mute = serve(None).await;
+    assert_eq!(dsh_health(mute).await, DshHealth::Broken);
+    // 端口无监听：只删记录，不涉及进程。
+    let dead = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+    assert_eq!(dsh_health(dead_port).await, DshHealth::Dead);
+}
+
+#[test]
+fn dsh_cleanup_decision_only_touches_verified_own_listeners() {
+    let own = DshRecordEntry {
+        port: 54964,
+        pid: 4242,
+        opened: false,
+    };
+    let legacy = DshRecordEntry {
+        port: 54964,
+        pid: 0,
+        opened: false,
+    };
+    // 记录过 + 占用者核对为本用户的 node 进程 + 健康检查失败（认证栅栏 / 异常）
+    // → 清理。v1.2.6 的遗留记录只留端口（pid=0），核对的是当前占用者。
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::AuthGate, Some(4242)),
+        DshCleanup::Kill(4242)
+    );
+    assert_eq!(
+        dsh_cleanup_decision(legacy, DshHealth::AuthGate, Some(4242)),
+        DshCleanup::Kill(4242)
+    );
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::Broken, Some(4242)),
+        DshCleanup::Kill(4242)
+    );
+    // 端口换了主人（记录里的实例已退出）→ 不是本应用起的进程，只删记录。
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::AuthGate, Some(777)),
+        DshCleanup::Forget
+    );
+    // 占用者核对不出来（别的用户 / 非 node / 权限不足）→ 只删记录，绝不动进程。
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::AuthGate, None),
+        DshCleanup::Forget
+    );
+    // 端口已无监听 → 只删记录。
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::Dead, None),
+        DshCleanup::Forget
+    );
+    // 健康应答的实例（用户手动 dsh web 或本应用起的可用实例）→ 保留，不动进程。
+    assert_eq!(
+        dsh_cleanup_decision(own, DshHealth::Serving, Some(4242)),
+        DshCleanup::Keep
+    );
+    assert_eq!(
+        dsh_cleanup_decision(legacy, DshHealth::Serving, Some(4242)),
+        DshCleanup::Keep
+    );
+}
+
+#[test]
+fn loopback_listener_and_same_user_image_resolve_the_test_process() {
+    // 端口占用者与进程身份核对走 GetExtendedTcpTable + OpenProcess：用本测试
+    // 进程当样本，确认这两条链路真的能解析出结果——否则清理会永远因「核对不
+    // 出来」而静默失效，而所有负向断言仍会通过。
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert_eq!(
+        transport::loopback_listener(port).unwrap(),
+        Some(std::process::id())
+    );
+    let image = transport::same_user_image_name(std::process::id())
+        .unwrap()
+        .expect("the test process belongs to the current user");
+    assert_eq!(
+        Path::new(&image).file_name().unwrap().to_string_lossy(),
+        std::env::current_exe()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+    );
+    // 本测试进程不是 node.exe：端口即使被占也不认作 DSH 实例，绝不清理。
+    assert_eq!(dsh_listener_pid(port), None);
+    // 没有监听者的端口没有占用者。
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let free_port = free.local_addr().unwrap().port();
+    drop(free);
+    assert_eq!(transport::loopback_listener(free_port).unwrap(), None);
+}
+
+#[tokio::test]
+async fn dsh_listener_pid_accepts_a_same_user_node_listener_only() {
+    // 正向路径：dsh 的运行体是 node.exe，本测试直接起一个同样的 node 监听
+    // （401 认证栅栏应答），验证端口占用者能解析出 PID、健康检查判为认证栅栏。
+    // 没有 node 的环境（CI 装了 Node 24）跳过正向断言。
+    let Some(node) = node_executable() else { return };
+    let (mut child, port) = spawn_node_auth_gate(&node);
+    let pid = child.id();
+    let listening = wait_until_listening(port).await;
+    let resolved = if listening {
+        dsh_listener_pid(port)
+    } else {
+        None
+    };
+    let health = if listening {
+        dsh_health(port).await
+    } else {
+        DshHealth::Dead
+    };
+    // 先收尸再断言：断言失败也不留下 node 进程。
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(listening, "the node stub must start listening");
+    assert_eq!(resolved, Some(pid));
+    assert_eq!(health, DshHealth::AuthGate);
+}
+
+#[tokio::test]
+async fn dsh_cleanup_kills_the_recorded_unusable_instance_and_spares_others() {
+    let Some(node) = node_executable() else { return };
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    // 本应用记录过的实例（同机 node + 401 认证栅栏）→ 健康检查失败，必须清掉。
+    let (mut recorded, recorded_port) = spawn_node_auth_gate(&node);
+    // 与记录无关的实例（用户自己起的 dsh 就是这种形状）→ 绝不能碰。
+    let (mut bystander, bystander_port) = spawn_node_auth_gate(&node);
+    assert!(wait_until_listening(recorded_port).await);
+    assert!(wait_until_listening(bystander_port).await);
+    let recorded_pid = dsh_listener_pid(recorded_port).expect("node listener resolves to a pid");
+    assert_eq!(recorded_pid, recorded.id());
+    dsh_record_port(&record, recorded_port, recorded_pid);
+
+    let kept = dsh_cleanup(&record, &dsh_read_entries(&record)).await;
+
+    let recorded_killed = wait_until_exited(&mut recorded).await;
+    let bystander_alive = bystander.try_wait().unwrap().is_none();
+    let _ = bystander.kill();
+    let _ = bystander.wait();
+    if !recorded_killed {
+        let _ = recorded.kill();
+        let _ = recorded.wait();
+    }
+    assert!(kept.is_empty(), "the unusable recorded instance must be dropped");
+    assert!(dsh_read_entries(&record).is_empty());
+    assert!(recorded_killed, "the recorded instance must be killed");
+    assert!(
+        bystander_alive,
+        "an instance that is not in the record must never be touched"
+    );
+}
+
+#[tokio::test]
+async fn dsh_cleanup_spares_an_instance_whose_link_was_delivered() {
+    let Some(node) = node_executable() else { return };
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    let (mut child, port) = spawn_node_auth_gate(&node);
+    assert!(wait_until_listening(port).await);
+    let pid = dsh_listener_pid(port).expect("node listener resolves to a pid");
+    dsh_record_port(&record, port, pid);
+    // 认证链接已交付浏览器（落盘标记）：浏览器持有 cookie，401 探测不代表不可用。
+    dsh_mark_opened(&record, port);
+    // 重启路径：从磁盘重新读出的记录必须带着 opened，否则应用重启后仍会误杀它。
+    assert_eq!(
+        dsh_read_entries(&record),
+        vec![DshRecordEntry {
+            port,
+            pid,
+            opened: true
+        }]
+    );
+
+    let kept = dsh_cleanup(&record, &dsh_read_entries(&record)).await;
+
+    let alive = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        kept,
+        vec![DshRecordEntry {
+            port,
+            pid,
+            opened: true
+        }]
+    );
+    assert!(
+        alive,
+        "an instance whose authenticated link was delivered must never be killed, across restarts too"
+    );
+}
+
+// 真实 node（CI 装了 Node 24）：用 dsh 同样的运行体与认证栅栏应答做端到端验证。
+fn node_executable() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("node.exe"))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn spawn_node_auth_gate(node: &Path) -> (Child, u16) {
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    drop(socket);
+    let script = format!(
+        "require('http').createServer((req,res)=>{{res.writeHead(401);res.end()}}).listen({port},'127.0.0.1')"
+    );
+    let child = git::new_cmd(&node.to_string_lossy())
+        .args(["-e", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    (child, port)
+}
+
+async fn wait_until_listening(port: u16) -> bool {
+    for _ in 0..200 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+async fn wait_until_exited(child: &mut Child) -> bool {
+    for _ in 0..100 {
+        if child.try_wait().unwrap().is_some() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn dsh_cleanup_forgets_dead_and_foreign_ports_without_killing() {
+    let scratch = Scratch::new();
+    let record = scratch.0.join("ports.json");
+    // 死端口：以前起过、现在没人监听 → 只删记录。
+    let dead = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+    // 被别的进程占用（本测试进程，不是 node.exe）：身份核对不通过 → 绝不按 PID 清理。
+    let foreign = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let foreign_port = foreign.local_addr().unwrap().port();
+    dsh_record_port(&record, dead_port, 0);
+    dsh_record_port(&record, foreign_port, 0);
+    // 用户手动 dsh web 的默认端口：探测与清理都跳过，永远留在记录里。
+    dsh_record_port(&record, DSH_DEFAULT_PORT, 0);
+
+    let kept = dsh_cleanup(&record, &dsh_read_entries(&record)).await;
+
+    assert_eq!(
+        kept,
+        vec![DshRecordEntry {
+            port: DSH_DEFAULT_PORT,
+            pid: 0,
+            opened: false
+        }]
+    );
+    assert_eq!(dsh_read_entries(&record), kept);
+    // 清理没有杀任何进程：被占用的端口仍在监听。
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", foreign_port))
+            .await
+            .is_ok()
+    );
+    drop(foreign);
 }
 
 #[tokio::test]
