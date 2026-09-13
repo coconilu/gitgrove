@@ -822,19 +822,54 @@ fn dsh_port_record_keeps_recent_dedupes_and_survives_corruption() {
     );
     // 重复记录提到最前而不是产生重复项，并连同监听进程 PID 一起更新。
     dsh_record_port(&record, 50004, 4242);
-    assert_eq!(dsh_read_entries(&record)[0], DshRecordEntry { port: 50004, pid: 4242 });
+    assert_eq!(
+        dsh_read_entries(&record)[0],
+        DshRecordEntry {
+            port: 50004,
+            pid: 4242,
+            opened: false
+        }
+    );
     assert_eq!(ports(&record)[1..].iter().filter(|p| **p == 50004).count(), 0);
+    // 认证链接交付后落盘 opened：重启（重新读文件）仍然有效，之后同一端口上起
+    // 新实例时随新记录重置（新实例没有浏览器 cookie）。
+    dsh_mark_opened(&record, 50004);
+    assert!(dsh_read_entries(&record)[0].opened);
+    assert!(std::fs::read_to_string(&record).unwrap().contains("opened"));
+    dsh_record_port(&record, 50004, 777);
+    assert!(!dsh_read_entries(&record)[0].opened);
+    // 记录里没有的端口：标记不新建条目，只当次调用无效果。
+    dsh_mark_opened(&record, 50099);
+    assert!(ports(&record).iter().all(|port| *port != 50099));
     // 端口 0 不合法，读取时过滤。
     std::fs::write(&record, serde_json::to_string(&[0u16, 50001]).unwrap()).unwrap();
     assert_eq!(ports(&record), vec![50001]);
-    // v1.2.6 及更早的记录只有端口：读成 pid=0（清理时身份核对更保守）。
+    // v1.2.6 及更早的记录只有端口：读成 pid=0 / opened=false（清理时身份核对更保守）。
     std::fs::write(&record, serde_json::to_string(&[54964u16, 60001]).unwrap()).unwrap();
     assert_eq!(
         dsh_read_entries(&record),
         vec![
-            DshRecordEntry { port: 54964, pid: 0 },
-            DshRecordEntry { port: 60001, pid: 0 }
+            DshRecordEntry {
+                port: 54964,
+                pid: 0,
+                opened: false
+            },
+            DshRecordEntry {
+                port: 60001,
+                pid: 0,
+                opened: false
+            }
         ]
+    );
+    // 只带 port/pid 的中间格式（无 opened）：读成 false，不视为已交付链接。
+    std::fs::write(&record, r#"[{"port":50002,"pid":7}]"#).unwrap();
+    assert_eq!(
+        dsh_read_entries(&record),
+        vec![DshRecordEntry {
+            port: 50002,
+            pid: 7,
+            opened: false
+        }]
     );
     // 损坏文件自愈为空列表。
     std::fs::write(&record, "not-json").unwrap();
@@ -938,10 +973,12 @@ fn dsh_cleanup_decision_only_touches_verified_own_listeners() {
     let own = DshRecordEntry {
         port: 54964,
         pid: 4242,
+        opened: false,
     };
     let legacy = DshRecordEntry {
         port: 54964,
         pid: 0,
+        opened: false,
     };
     // 记录过 + 占用者核对为本用户的 node 进程 + 健康检查失败（认证栅栏 / 异常）
     // → 清理。v1.2.6 的遗留记录只留端口（pid=0），核对的是当前占用者。
@@ -1076,7 +1113,7 @@ async fn dsh_cleanup_kills_the_recorded_unusable_instance_and_spares_others() {
 }
 
 #[tokio::test]
-async fn dsh_cleanup_spares_an_instance_this_session_already_opened() {
+async fn dsh_cleanup_spares_an_instance_whose_link_was_delivered() {
     let Some(node) = node_executable() else { return };
     let scratch = Scratch::new();
     let record = scratch.0.join("ports.json");
@@ -1084,18 +1121,34 @@ async fn dsh_cleanup_spares_an_instance_this_session_already_opened() {
     assert!(wait_until_listening(port).await);
     let pid = dsh_listener_pid(port).expect("node listener resolves to a pid");
     dsh_record_port(&record, port, pid);
-    // 等价于本次会话已用认证链接打开过它：浏览器已有 cookie，401 探测不代表不可用。
-    dsh_mark_opened(port);
+    // 认证链接已交付浏览器（落盘标记）：浏览器持有 cookie，401 探测不代表不可用。
+    dsh_mark_opened(&record, port);
+    // 重启路径：从磁盘重新读出的记录必须带着 opened，否则应用重启后仍会误杀它。
+    assert_eq!(
+        dsh_read_entries(&record),
+        vec![DshRecordEntry {
+            port,
+            pid,
+            opened: true
+        }]
+    );
 
     let kept = dsh_cleanup(&record, &dsh_read_entries(&record)).await;
 
     let alive = child.try_wait().unwrap().is_none();
     let _ = child.kill();
     let _ = child.wait();
-    assert_eq!(kept, vec![DshRecordEntry { port, pid }]);
+    assert_eq!(
+        kept,
+        vec![DshRecordEntry {
+            port,
+            pid,
+            opened: true
+        }]
+    );
     assert!(
         alive,
-        "an instance opened with a token in this session must never be killed"
+        "an instance whose authenticated link was delivered must never be killed, across restarts too"
     );
 }
 
@@ -1174,7 +1227,8 @@ async fn dsh_cleanup_forgets_dead_and_foreign_ports_without_killing() {
         kept,
         vec![DshRecordEntry {
             port: DSH_DEFAULT_PORT,
-            pid: 0
+            pid: 0,
+            opened: false
         }]
     );
     assert_eq!(dsh_read_entries(&record), kept);
