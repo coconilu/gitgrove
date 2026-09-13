@@ -284,6 +284,99 @@ export function computeMove(
 	return { toStatus: over.status, beforeItemId: over.id };
 }
 
+// ---- 拖拽回写（#83）：跨进/跨出最后一列的 GitHub 卡片改 issue state ----
+
+export interface WritebackPlan {
+	/** true = 关闭 issue（拖入 done），false = 重开（拖出 done） */
+	closed: boolean;
+}
+
+/**
+ * 这次拖拽是否需要回写 GitHub：只有「有合法 githubRef 且跨列进/出最后一列」才回写。
+ * 列内排序、非 done 列之间的移动、本地卡片（无 githubRef）、老数据里的非法 ref
+ * 一律返回 null。manualLock 不参与判断——锁定只约束同步引擎的自动迁移，
+ * 手动拖拽始终生效。
+ */
+export function writebackPlan(
+	item: PmItem,
+	toStatus: string,
+	doneId: string,
+): WritebackPlan | null {
+	if (!item.githubRef || !parseGithubRef(item.githubRef)) return null;
+	if (item.status === toStatus) return null;
+	if (toStatus === doneId) return { closed: true };
+	if (item.status === doneId) return { closed: false };
+	return null;
+}
+
+export interface PmMoveDeps {
+	setIssueState(itemId: string, closed: boolean): Promise<void>;
+	moveItem(
+		itemId: string,
+		toStatus: string,
+		beforeItemId: string | null,
+	): Promise<PmItem>;
+	updateItem(item: PmItem): Promise<PmItem>;
+}
+
+export type PmMoveOutcome =
+	| { ok: true; item: PmItem }
+	| { ok: false; stage: "writeback" | "move"; error: string };
+
+/**
+ * 拖拽落库编排：先回写 GitHub（拖入 done → close、拖出 → reopen），成功后再
+ * pm_move_item —— closedAt 的打点/清空因此与本地拖动、同步迁移共用一条路径。
+ * 回写失败不做任何本地移动（调用方回滚乐观列 + toast GitHub 原始错误）；
+ * 拖动 GitHub 卡片跨列照旧置 manualLock。
+ *
+ * closedAt 的精度（已知差异，不做补偿）：打点值是本地移动那一刻的 now，不是
+ * PATCH 响应里的 GitHub 权威 closed_at——两者相差一个往返（秒级）。`pm_sync_github`
+ * 的 backfill 只在 `closed_at IS NULL` 时生效（sync.rs），本地已打点故永不覆盖。
+ * 该值只喂 done 列折叠排序（doneRecencyKey），秒级差异不影响分批与倒序。
+ */
+export async function performMove(
+	deps: PmMoveDeps,
+	prev: PmItem,
+	toStatus: string,
+	beforeItemId: string | null,
+	doneId: string,
+): Promise<PmMoveOutcome> {
+	const plan = writebackPlan(prev, toStatus, doneId);
+	if (plan) {
+		try {
+			await deps.setIssueState(prev.id, plan.closed);
+		} catch (e) {
+			return { ok: false, stage: "writeback", error: String(e) };
+		}
+	}
+	let item: PmItem;
+	try {
+		item = await deps.moveItem(prev.id, toStatus, beforeItemId);
+	} catch (e) {
+		// 回写已成功时只可能「远端已改、本地没动」：PATCH 的往返窗口里落点前一张
+		// 卡可能被并发迁走（后台 sync 自动迁移 / 用户又拖了一次）→ 报 beforeItem
+		// 不在目标列。此时用列尾重试一次保住用户意图；PATCH 幂等且此处不重发回写。
+		// 不需要回写的本地拖拽不重试，保持既有失败语义（todo/doing 行为不变）。
+		if (!plan || beforeItemId === null)
+			return { ok: false, stage: "move", error: String(e) };
+		try {
+			item = await deps.moveItem(prev.id, toStatus, null);
+		} catch (e2) {
+			return { ok: false, stage: "move", error: String(e2) };
+		}
+	}
+	try {
+		// 拖动 GitHub 卡片换列 → 置 manualLock（人工接管列位置，同步不再自动迁移）；
+		// PUT 全字段语义：回传 move 返回的完整 item，order/createdAt/githubRef 服务端保留
+		if (prev.githubRef && !prev.manualLock && prev.status !== toStatus)
+			item = await deps.updateItem({ ...item, manualLock: true });
+	} catch (e) {
+		// 移动已落库、只是置锁失败：文案归到 move 阶段，卡片位置由 reloadLocal 收口
+		return { ok: false, stage: "move", error: String(e) };
+	}
+	return { ok: true, item };
+}
+
 // ---- 数据加载编排（#61）：本地数据先渲染，GitHub 同步后台化 ----
 
 /** 前端同步超时兜底：后端网络有界（connect 5s / 请求 10s），此处再兜住 gh CLI、

@@ -142,6 +142,7 @@ pub fn run() {
             pm::pm_export_json,
             pm::pm_import_json,
             pm::pm_sync_github,
+            pm::pm_set_github_issue_state,
             // 项目 / clone
             projects::check_clone_target,
             projects::clone_repo,

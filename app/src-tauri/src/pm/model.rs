@@ -20,6 +20,31 @@ pub fn is_valid_priority(p: &str) -> bool {
     PRIORITIES.contains(&p)
 }
 
+/// 解析 `owner/repo#number`（sync 引擎写入 github_ref 的格式，与前端
+/// model.ts parseGithubRef 同一套规则）；格式不符返回 None（老数据/手改字段容错）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GithubIssueRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+pub fn parse_github_ref(gref: &str) -> Option<GithubIssueRef> {
+    let (slug, number) = gref.split_once('#')?;
+    let (owner, repo) = slug.split_once('/')?;
+    let plain = |s: &str| {
+        !s.is_empty() && !s.contains(|c: char| c == '/' || c == '#' || c.is_whitespace())
+    };
+    if !plain(owner) || !plain(repo) || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(GithubIssueRef {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        number: number.parse().ok()?,
+    })
+}
+
 /// 看板列定义，持久化在 settings 表（key = "statuses"，JSON 数组）
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -146,4 +171,46 @@ pub struct PmExport {
 pub struct ImportResult {
     pub items: usize,
     pub milestones: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(gref: &str) -> Option<GithubIssueRef> {
+        parse_github_ref(gref)
+    }
+
+    #[test]
+    fn parse_github_ref_accepts_owner_repo_number() {
+        assert_eq!(
+            parsed("coconilu/gitgrove#83"),
+            Some(GithubIssueRef {
+                owner: "coconilu".into(),
+                repo: "gitgrove".into(),
+                number: 83,
+            })
+        );
+        // 仓库名可带点/下划线/短横线（GitHub 允许）
+        assert_eq!(parsed("a/b.c-d_e#1").unwrap().repo, "b.c-d_e");
+    }
+
+    #[test]
+    fn parse_github_ref_rejects_malformed() {
+        for bad in [
+            "",
+            "coconilu/gitgrove",
+            "coconilu/gitgrove#",
+            "coconilu/gitgrove#abc",
+            "coconilu/gitgrove#1#2",
+            "coconilu#83",
+            "/gitgrove#83",
+            "coconilu/#83",
+            "co conilu/gitgrove#83",
+            "coconilu/gi tgrove#83",
+            "a/b/c#83",
+        ] {
+            assert_eq!(parsed(bad), None, "应拒绝: {bad:?}");
+        }
+    }
 }

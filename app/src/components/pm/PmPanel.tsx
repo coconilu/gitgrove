@@ -29,11 +29,13 @@ import MilestoneView from "./MilestoneView";
 import {
 	type BoardFilter,
 	DEFAULT_STATUSES,
+	doneStatusId,
 	EMPTY_FILTER,
 	filterItems,
 	type PmSyncBanner,
 	PRIORITIES,
 	PRIORITY_LABELS,
+	performMove,
 	pmSyncWithTimeout,
 	repoName,
 	syncBannerFromOutcome,
@@ -251,7 +253,10 @@ export default function PmPanel({ p }: { p: Project }) {
 			toast("任务已删除");
 		}, [itemsKey, milestonesKey]);
 	/** 拖拽流转：乐观更新，服务端返回的权威 order 再回填；作废 + 在途暂扣保证
-	 * 期间的整表刷新不覆盖拖拽中的乐观顺序（#77） */
+	 * 期间的整表刷新不覆盖拖拽中的乐观顺序（#77）。
+	 * GitHub 卡片跨进/跨出 done 列时先回写 issue（close/reopen，见 performMove）：
+	 * 回写失败退回原列并 toast GitHub 原始错误；manualLock 只挡同步引擎的自动
+	 * 迁移，手动拖拽照常生效 */
 	const moveItem = (
 		itemId: string,
 		toStatus: string,
@@ -259,6 +264,7 @@ export default function PmPanel({ p }: { p: Project }) {
 	) =>
 		runMutate(async () => {
 			const prev = (items ?? []).find((i) => i.id === itemId);
+			if (!prev) return;
 			setItems((list) => {
 				const current = (list ?? []).filter((i) => i.id !== itemId);
 				const active = (list ?? []).find((i) => i.id === itemId);
@@ -277,24 +283,34 @@ export default function PmPanel({ p }: { p: Project }) {
 				current.splice(at < 0 ? current.length : at, 0, moved);
 				return [...current];
 			});
-			try {
-				let updated = await api.pmMoveItem(itemId, toStatus, beforeItemId);
-				// 拖动 GitHub 卡片换列 → 置 manualLock（人工接管列位置，同步不再自动迁移）；
-				// PUT 全字段语义：回传 move 返回的完整 item，order/createdAt/githubRef 服务端保留
-				if (prev?.githubRef && !prev.manualLock && prev.status !== toStatus) {
-					updated = await api.pmUpdateItem({ ...updated, manualLock: true });
-				}
-				setItems((list) =>
-					(list ?? []).map((i) => (i.id === updated.id ? updated : i)),
+			const outcome = await performMove(
+				{
+					setIssueState: api.pmSetGithubIssueState,
+					moveItem: api.pmMoveItem,
+					updateItem: api.pmUpdateItem,
+				},
+				prev,
+				toStatus,
+				beforeItemId,
+				doneStatusId(statuses),
+			);
+			if (!outcome.ok) {
+				// 回滚由 runMutate 结束的 reloadLocal 以数据库为准收口（本地未落库）
+				toast(
+					(outcome.stage === "writeback"
+						? "回写 GitHub 失败："
+						: "移动失败：") + outcome.error,
 				);
-				void api
-					.pmListMilestones()
-					.then(setMilestones)
-					.catch(() => {});
-			} catch (e) {
-				// 失败回滚由 runMutate 结束的 reloadLocal 以数据库为准收口
-				toast("移动失败：" + String(e));
+				return;
 			}
+			const updated = outcome.item;
+			setItems((list) =>
+				(list ?? []).map((i) => (i.id === updated.id ? updated : i)),
+			);
+			void api
+				.pmListMilestones()
+				.then(setMilestones)
+				.catch(() => {});
 		}, [itemsKey, milestonesKey]);
 
 	// ---- milestone 变更 ----
