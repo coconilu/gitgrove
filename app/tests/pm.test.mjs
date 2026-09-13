@@ -533,3 +533,76 @@ test("performMove：移动失败归到 move 阶段（回写已成功）", async 
 	assert.equal(out.stage, "move");
 	assert.deepEqual(calls, [["state", "i1", true]]);
 });
+
+test("performMove：落点前一张卡离列 → 回写成功后用列尾重试一次（远端已改不丢意图）", async () => {
+	let attempt = 0;
+	const { calls, deps } = moveDeps({
+		moveItem: async (id, toStatus, beforeItemId) => {
+			calls.push(["move", id, toStatus, beforeItemId]);
+			attempt++;
+			if (attempt === 1) throw new Error("beforeItem i9 不在目标列 done");
+			return item({ id, status: toStatus, githubRef: "o/r#7" });
+		},
+	});
+	const out = await performMove(
+		deps,
+		gh({ id: "i1", status: "doing" }),
+		"done",
+		"i9",
+		DONE_ID,
+	);
+	assert.equal(out.ok, true);
+	assert.deepEqual(calls, [
+		["state", "i1", true], // 回写只发一次（PATCH 幂等，不重发）
+		["move", "i1", "done", "i9"],
+		["move", "i1", "done", null], // 列尾重试保住用户意图
+		["lock", "i1"],
+	]);
+});
+
+test("performMove：列尾重试仍失败 → 归到 move 阶段并带出重试错误", async () => {
+	const { calls, deps } = moveDeps({
+		moveItem: async (id, toStatus, beforeItemId) => {
+			calls.push(["move", id, toStatus, beforeItemId]);
+			throw new Error(
+				beforeItemId === null ? "item 已删除" : "beforeItem i9 不在目标列 done",
+			);
+		},
+	});
+	const out = await performMove(
+		deps,
+		gh({ id: "i1", status: "doing" }),
+		"done",
+		"i9",
+		DONE_ID,
+	);
+	assert.equal(out.ok, false);
+	assert.equal(out.stage, "move");
+	assert.ok(out.error.includes("item 已删除"), out.error);
+	assert.deepEqual(calls, [
+		["state", "i1", true],
+		["move", "i1", "done", "i9"],
+		["move", "i1", "done", null],
+	]);
+});
+
+test("performMove：本地卡片不回写也不重试（todo/doing 行为不变）", async () => {
+	let attempts = 0;
+	const { calls, deps } = moveDeps({
+		moveItem: async () => {
+			attempts++;
+			throw new Error("beforeItem i9 不在目标列 doing");
+		},
+	});
+	const out = await performMove(
+		deps,
+		item({ id: "i4", status: "todo" }),
+		"doing",
+		"i9",
+		DONE_ID,
+	);
+	assert.equal(out.ok, false);
+	assert.equal(out.stage, "move");
+	assert.equal(attempts, 1);
+	assert.deepEqual(calls, []);
+});

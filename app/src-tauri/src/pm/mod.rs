@@ -67,6 +67,9 @@ pub fn pm_move_item(
 /// 调 pm_move_item，closed_at 的「进最后一列打点、离开清空」与本地拖动、同步自动
 /// 迁移共用同一套逻辑（store::move_item），回写失败则本地列一并回滚。
 /// 网络阶段不持 pm 锁；失败把 GitHub 原始错误原样返回，前端 toast 展示。
+/// closed_at 精度：本地打点取移动那一刻的 now，不采用 PATCH 响应里的权威
+/// closed_at（两者相差一个往返，秒级）；sync 的 backfill 只在 closed_at 为
+/// NULL 时生效，故不会收敛——该值仅用于 done 列折叠排序，属已知差异。
 #[tauri::command]
 pub async fn pm_set_github_issue_state(
     state: State<'_, AppState>,
