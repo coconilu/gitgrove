@@ -43,7 +43,7 @@ master HEAD 已有绿 CI 时走快速通道：版本 PR 只改版本文件、源
 | 当前版本尚未发布但代码已合并 | 选择 none，发布通过 CI 的当前提交 |
 | 版本已正式发布 | 跳过，不覆盖用户已收到的安装包 |
 
-所有平台产物上传完成后才发布 Release 草稿。任何平台的安装包或 updater 签名缺失都会失败。publish 仍透传 release-target.mjs 的预发布标记（当前只有手动 dispatch，恒为 false，不会抢占 releases/latest）。签名仍使用既有 TAURI_SIGNING_PRIVATE_KEY 和对应密码 Secret。
+所有平台产物上传完成后才发布 Release 草稿。任何平台的安装包或 updater 签名缺失都会失败。预发布入口随触发器一起删除：`release-target.mjs` 不再产出预发布标记，`version` job 也不再输出该字段，publish 总是把 Release 发布为正式 latest。签名仍使用既有 TAURI_SIGNING_PRIVATE_KEY 和对应密码 Secret。
 
 ## 构建提速与时长基准
 

@@ -56,7 +56,6 @@ jobs:
       publish: ${{ steps.target.outputs.publish }}
       sha: ${{ steps.target.outputs.sha }}
       tag: ${{ steps.target.outputs.tag }}
-      prerelease: ${{ steps.target.outputs.prerelease }}
     steps:
       # 校验脚本来自当前可信的默认分支；它只读取候选提交，不执行候选代码。
       - uses: actions/checkout@v5
@@ -202,9 +201,6 @@ jobs:
           target_commitish: ${{ needs.version.outputs.sha }}
           draft: true
           fail_on_unmatched_files: true
-          # prerelease 由 release-target.mjs 输出；当前只有手动 dispatch 触发，恒为 false。
-          # 保留透传：出现预发布入口时发布步骤无需改动，且预发布不会抢占 releases/latest
-          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
           files: |
             dist-release/windows/*.exe
             dist-release/macos/*.dmg
@@ -214,10 +210,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
-          PRERELEASE: ${{ needs.version.outputs.prerelease }}
-        run: |
-          if [ "$PRERELEASE" = "true" ]; then
-            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
-          else
-            gh release edit "$RELEASE_TAG" --draft=false --latest
-          fi
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
