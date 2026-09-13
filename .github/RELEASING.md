@@ -51,15 +51,15 @@ master HEAD 已有绿 CI 时走快速通道：版本 PR 只改版本文件、源
 - prepare 快速通道：见上文「自动完成的步骤」，含分支保护 405 的回退路径。
 - 触发器精简：`workflow_run` 与 `issues: [closed]` 已从 `on:` 移除，只剩手动 dispatch（原因见开头）。
 
-时长基准（同仓库双平台发版实测，issue #64 落地前后）：
+时长基准（同仓库双平台发版实测，均取 run 的墙钟总时长）：
 
 | 场景 | 发版总时长 |
 | --- | --- |
 | 提速前（等版本 PR 完整 CI + 无 Rust 缓存） | 约 22min |
-| 冷缓存首版（Rust 依赖全量编译） | 13-15min |
-| 热缓存 + 快速通道 | 8-14min（v1.2.7 实测约 8min） |
+| 冷缓存首版（Rust 依赖全量编译，v1.2.7） | 12.9min |
+| 热缓存（v1.2.8 / v1.2.9 / v1.3.0） | 10-14min（13.5 / 11.3 / 10.5min） |
 
-冷缓存首版偏慢属预期，不算回归。剩余大头是 Windows 的 Tauri build，macOS 与它并行，publish（生成 latest.json 并发布 Release）约 15s。
+冷缓存首版偏慢属预期，不算回归；发布任务里 Windows 的 Tauri build 是剩余大头（约 4min），macOS 与它并行（约 2min），publish（生成 latest.json 并发布 Release）约 0.2min。单次发版耗时的大头是 prepare：它要等版本 PR 的 CI。三次热缓存发版里快速通道都先命中分支保护的 405 再回退等待该 CI（prepare 6-8min），因此「快速通道」目前与旧路径等时——只有默认分支已绿且分支保护不拦合并时它才真正省时。
 
 ## 维护说明
 
