@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.2（2026-09-15）
+
+- Merge pull request #88 from coconilu/chore/tower-merge-m30
+- Merge branch 'feat/item'
+- fix(sidebar): biome 格式化两处审查问题；搜索中不翻转持久化展开状态
+- feat(sidebar): 分组列表默认收起，新增全部展开与搜索按钮
+
 ## v1.3.1（2026-09-13）
 
 - Merge pull request #85 from coconilu/chore/tower-merge-m28-m29
