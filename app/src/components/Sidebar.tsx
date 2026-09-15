@@ -209,12 +209,12 @@ export default function Sidebar() {
 									<button
 										className="project-select"
 										title={p.localPath}
-										aria-label={
-											(isExpanded(p.id) ? "收起 " : "展开 ") + p.name
-										}
+										aria-label={(isExpanded(p.id) ? "收起 " : "展开 ") + p.name}
 										aria-expanded={isExpanded(p.id)}
 										onClick={() => {
-											s.toggleProject(p.id);
+											// 搜索中展开是视图层强制的，翻转持久化状态不可见且会
+											// 在清空搜索后意外改变展开状态，这里只打开不切换
+											if (!q) s.toggleProject(p.id);
 											s.openProject(p.id);
 										}}
 									>

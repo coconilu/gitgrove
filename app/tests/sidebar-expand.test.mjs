@@ -26,10 +26,11 @@ const persisted = () => {
 
 test("normalizeExpanded：缺省即收起，只保留仍存在且展开中的项目", () => {
 	assert.deepEqual(
-		normalizeExpanded(
-			{ a: true, b: false, stale: true, gone: true },
-			["a", "b", "c"],
-		),
+		normalizeExpanded({ a: true, b: false, stale: true, gone: true }, [
+			"a",
+			"b",
+			"c",
+		]),
 		{ a: true },
 	);
 	// 空记录 → 全部收起
