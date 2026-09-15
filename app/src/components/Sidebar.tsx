@@ -1,4 +1,9 @@
-import { RefreshCw } from "lucide-react";
+import {
+	ChevronsDownUp,
+	ChevronsUpDown,
+	RefreshCw,
+	Search,
+} from "lucide-react";
 import { useState } from "react";
 import * as api from "../api";
 import { selectionProject } from "../navigation";
@@ -22,6 +27,10 @@ export default function Sidebar() {
 	const [query, setQuery] = useState("");
 	const active = selectionProject(s.projects, s.sel);
 	const q = query.trim().toLowerCase();
+	// 搜索时强制展开命中的分组显示匹配子项；清空搜索后回落到用户自己的展开状态
+	const isExpanded = (pid: string) => q !== "" || (s.expanded[pid] ?? false);
+	const allExpanded =
+		s.projects.length > 0 && s.projects.every((p) => s.expanded[p.id]);
 	const projects = s.projects.filter(
 		(p) =>
 			!q ||
@@ -133,6 +142,7 @@ export default function Sidebar() {
 			</nav>
 			<div className="sidebar-search">
 				<Input
+					id="sidebar-project-search"
 					aria-label="搜索本地项目或分支"
 					placeholder="搜索项目或分支"
 					value={query}
@@ -141,15 +151,31 @@ export default function Sidebar() {
 			</div>
 			<div className="group-by">
 				<span>分组</span>
-				<Select
-					aria-label="分组方式"
-					value={s.groupBy}
-					onValueChange={(v) => s.setGroupBy(v as "repo" | "status")}
-					options={[
-						{ value: "repo", label: "按项目" },
-						{ value: "status", label: "按任务关联" },
-					]}
-				/>
+				<div className="group-by-ops">
+					<IconButton
+						label={allExpanded ? "全部收起" : "全部展开"}
+						icon={allExpanded ? ChevronsDownUp : ChevronsUpDown}
+						aria-expanded={allExpanded}
+						disabled={q !== ""}
+						onClick={() => s.setAllExpanded(!allExpanded)}
+					/>
+					<IconButton
+						label="搜索项目或分支"
+						icon={Search}
+						onClick={() =>
+							document.getElementById("sidebar-project-search")?.focus()
+						}
+					/>
+					<Select
+						aria-label="分组方式"
+						value={s.groupBy}
+						onValueChange={(v) => s.setGroupBy(v as "repo" | "status")}
+						options={[
+							{ value: "repo", label: "按项目" },
+							{ value: "status", label: "按任务关联" },
+						]}
+					/>
+				</div>
 			</div>
 			<div className="rows">
 				{s.projectsError && (
@@ -183,12 +209,12 @@ export default function Sidebar() {
 									<button
 										className="project-select"
 										title={p.localPath}
-										aria-label={
-											((s.expanded[p.id] ?? true) ? "收起 " : "展开 ") + p.name
-										}
-										aria-expanded={s.expanded[p.id] ?? true}
+										aria-label={(isExpanded(p.id) ? "收起 " : "展开 ") + p.name}
+										aria-expanded={isExpanded(p.id)}
 										onClick={() => {
-											s.toggleProject(p.id);
+											// 搜索中展开是视图层强制的，翻转持久化状态不可见且会
+											// 在清空搜索后意外改变展开状态，这里只打开不切换
+											if (!q) s.toggleProject(p.id);
 											s.openProject(p.id);
 										}}
 									>
@@ -224,8 +250,7 @@ export default function Sidebar() {
 										</DropdownMenuContent>
 									</DropdownMenu>
 								</div>
-								{(s.expanded[p.id] ?? true) &&
-									p.checkouts.map((c) => checkout(p, c))}
+								{isExpanded(p.id) && p.checkouts.map((c) => checkout(p, c))}
 							</div>
 						))
 					: Object.entries(lanes).map(([name, entries]) => (

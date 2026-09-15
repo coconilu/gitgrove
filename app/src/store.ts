@@ -50,13 +50,36 @@ type Layout = {
 	filesOpen: boolean;
 	sidebarWidth: number;
 	filesWidth: number;
+	/** 持久化展开中的项目 id：缺省（未记录）即收起，坏数据整体丢弃。 */
+	expandedProjects: string[];
+	groupBy: "repo" | "status";
 };
 const defaultLayout: Layout = {
 	sidebarOpen: true,
 	filesOpen: false,
 	sidebarWidth: 248,
 	filesWidth: 280,
+	expandedProjects: [],
+	groupBy: "repo",
 };
+/** 展开记录 → 持久化的展开 id 集合（顺序稳定，去重）。 */
+export function expandedIds(expanded: Record<string, boolean>): string[] {
+	return [...new Set(Object.keys(expanded).filter((id) => expanded[id]))];
+}
+/** 展开记录按当前项目列表归并：只保留仍存在的展开项，缺省语义为收起。 */
+export function normalizeExpanded(
+	expanded: Record<string, boolean>,
+	projectIds: readonly string[],
+): Record<string, boolean> {
+	const next: Record<string, boolean> = {};
+	for (const id of projectIds) if (expanded[id]) next[id] = true;
+	return next;
+}
+export function readExpandedProjects(value: unknown): string[] {
+	return Array.isArray(value) && value.every((id) => typeof id === "string")
+		? [...new Set(value as string[])]
+		: [];
+}
 function readLayout(): Layout {
 	try {
 		const value = JSON.parse(
@@ -72,6 +95,8 @@ function readLayout(): Layout {
 			filesWidth: Number.isFinite(value.filesWidth)
 				? Math.min(420, Math.max(240, value.filesWidth))
 				: 280,
+			expandedProjects: readExpandedProjects(value.expandedProjects),
+			groupBy: value.groupBy === "status" ? "status" : "repo",
 		};
 	} catch {
 		return defaultLayout;
@@ -113,6 +138,7 @@ interface AppState {
 	setTab: (tab: string) => void;
 	setLayout: (layout: Partial<Layout>) => void;
 	setGroupBy: (g: "repo" | "status") => void;
+	setAllExpanded: (value: boolean) => void;
 	setWorkItemFocus: (f: AppState["workItemFocus"]) => void;
 	toggleProject: (pid: string) => void;
 	setCloneProgress: (s: string | null) => void;
@@ -123,6 +149,7 @@ interface AppState {
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let projectsRequest = 0;
 let reposRequest = 0;
+const initialLayout = readLayout();
 export const useStore = create<AppState>((set, get) => ({
 	auth: null,
 	authLoaded: false,
@@ -130,10 +157,12 @@ export const useStore = create<AppState>((set, get) => ({
 	sel: null,
 	tab: "Overview",
 	visits: {},
-	layout: readLayout(),
-	groupBy: "repo",
+	layout: initialLayout,
+	groupBy: initialLayout.groupBy,
 	projects: [],
-	expanded: {},
+	expanded: Object.fromEntries(
+		initialLayout.expandedProjects.map((id) => [id, true]),
+	),
 	myRepos: null,
 	projectsLoading: false,
 	projectsError: "",
@@ -176,9 +205,13 @@ export const useStore = create<AppState>((set, get) => ({
 		try {
 			const projects = await api.listProjects();
 			if (request !== projectsRequest) return;
-			const expanded = { ...get().expanded };
-			for (const p of projects) if (!(p.id in expanded)) expanded[p.id] = true;
+			// 缺省即收起：归并掉已卸载项目的 stale key，并把存活的展开项回写持久化
+			const expanded = normalizeExpanded(
+				get().expanded,
+				projects.map((p) => p.id),
+			);
 			set({ projects, expanded });
+			get().setLayout({ expandedProjects: expandedIds(expanded) });
 			const sel = get().sel;
 			if (!keepSel || !selectionProject(projects, sel))
 				get().setSel(
@@ -277,11 +310,25 @@ export const useStore = create<AppState>((set, get) => ({
 			}
 			return { layout };
 		}),
-	setGroupBy: (groupBy) => set({ groupBy }),
-	toggleProject: (pid) =>
-		set((s) => ({
-			expanded: { ...s.expanded, [pid]: !(s.expanded[pid] ?? true) },
-		})),
+	setGroupBy: (groupBy) => {
+		set({ groupBy });
+		get().setLayout({ groupBy });
+	},
+	setAllExpanded: (value) => {
+		const expanded = value
+			? Object.fromEntries(get().projects.map((p) => [p.id, true]))
+			: {};
+		set({ expanded });
+		get().setLayout({ expandedProjects: expandedIds(expanded) });
+	},
+	toggleProject: (pid) => {
+		const expanded = {
+			...get().expanded,
+			[pid]: !(get().expanded[pid] ?? false),
+		};
+		set({ expanded });
+		get().setLayout({ expandedProjects: expandedIds(expanded) });
+	},
 	setCloneProgress: (cloneProgress) => set({ cloneProgress }),
 	toast: (toastMsg) => {
 		set({ toastMsg });
