@@ -117,7 +117,19 @@ button {
 	color: var(--muted);
 }
 .group-by .ui-select-trigger {
-	max-width: 150px;
+	max-width: 104px;
+}
+.group-by-ops {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.group-by .group-by-ops .icon-button {
+	flex-basis: 26px;
+	width: 26px;
+	height: 26px;
+	min-width: 26px;
+	min-height: 26px;
 }
 .rows {
 	flex: 1;
