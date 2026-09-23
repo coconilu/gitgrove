@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.3（2026-09-23）
+
+- Merge pull request #91 from coconilu/feat/kimi-code-desktop-90
+- feat(agents): 在…中打开接入 Kimi Code Desktop (#90)
+
 ## v1.3.2（2026-09-15）
 
 - Merge pull request #88 from coconilu/chore/tower-merge-m30
