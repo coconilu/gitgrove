@@ -29,6 +29,7 @@ static OPEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub enum Agent {
     Codex,
     Kimi,
+    KimiDesktop,
     Dsh,
 }
 
@@ -36,6 +37,12 @@ pub enum Agent {
 pub fn agent_open_support() -> bool {
     // Other platforms retain the existing editor/terminal adapters.
     cfg!(windows)
+}
+
+// Kimi Code Desktop 的检测与打开路径一样只在 Windows 有意义。
+#[tauri::command]
+pub fn kimi_desktop_installed() -> bool {
+    kimi_desktop_executable().is_ok()
 }
 
 fn target_directory(path: &str) -> Result<PathBuf, String> {
@@ -90,6 +97,7 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
         return Err(match agent {
             Agent::Codex => "无法打开 Codex：请安装或修复 Codex 桌面应用，确认 Windows 已注册 codex 协议后重试。".to_string(),
             Agent::Kimi => "工作区已登记，但浏览器未能打开。请检查 Windows 默认浏览器，然后重试。".to_string(),
+            Agent::KimiDesktop => "无法打开 Kimi Code Desktop：请确认已安装后重试。".to_string(),
             // 认证 URL 的 query 里带 token，绝不进入返回给前端的错误文本：
             // 只展示源地址，供手动访问。
             Agent::Dsh => format!(
@@ -101,8 +109,94 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = (url, agent);
-        Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into())
+        Err("本版本的 Codex / Kimi Code / Kimi Code Desktop / DSH 图形界面入口仅在 Windows 启用。".into())
     }
+}
+
+// Kimi Code Desktop 的 exe 定位：优先读 kimi-code 协议注册表命令（安装包注册
+// HKCU\Software\Classes\kimi-code\shell\open\command，值形如
+// "C:\Program Files\Kimi Code\Kimi Code.exe" "%1"），解析出 exe 路径并确认
+// 文件仍在；兜底常见默认安装路径（机器级与用户级）。
+#[cfg(windows)]
+fn kimi_desktop_registered_exe() -> Option<PathBuf> {
+    let command = registry_default_string(r"Software\Classes\kimi-code\shell\open\command")?;
+    let exe = command_line_executable(&command)?;
+    Path::new(&exe).is_file().then(|| PathBuf::from(exe))
+}
+
+fn kimi_desktop_candidates() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        vec![
+            PathBuf::from(r"C:\Program Files\Kimi Code\Kimi Code.exe"),
+            std::env::var_os("LOCALAPPDATA")
+                .map(|local| PathBuf::from(local).join(r"Programs\Kimi Code\Kimi Code.exe"))
+                .unwrap_or_default(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn kimi_desktop_executable() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    if let Some(exe) = kimi_desktop_registered_exe() {
+        return Ok(exe);
+    }
+    kimi_desktop_candidates()
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| "未找到 Kimi Code Desktop。请安装 Windows 版 Kimi Code Desktop 后重启 GitGrove。".into())
+}
+
+// 注册表命令行的 exe 段提取：带引号取第一对引号内的完整路径（可含空格），
+// 未加引号取首个空白前的片段；残缺值返回 None，由调用方走兜底路径。
+fn command_line_executable(command: &str) -> Option<String> {
+    let command = command.trim();
+    if let Some(quoted) = command.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        let exe = &quoted[..end];
+        return (!exe.is_empty()).then(|| exe.to_string());
+    }
+    let exe = command.split_whitespace().next()?;
+    (!exe.is_empty()).then(|| exe.to_string())
+}
+
+#[cfg(windows)]
+fn registry_default_string(subkey: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let subkey: Vec<u16> = subkey.encode_utf16().chain(Some(0)).collect();
+    let mut buffer = [0u16; 1024];
+    let mut size = (buffer.len() * std::mem::size_of::<u16>()) as u32;
+    let mut kind = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            &mut kind,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|&c| c == 0)?;
+    String::from_utf16(&buffer[..end]).ok()
+}
+
+fn kimi_desktop_command(executable: &Path, target: &Path) -> Command {
+    let mut command = git::new_cmd(&executable.to_string_lossy());
+    // --workspace 是 Kimi Code Desktop 未承诺的稳定接口（与 codex:// 同定性），
+    // Windows Jump List「最近工作区」即以该参数启动。整段单参数传递，由 std
+    // 处理引号转义，目录绝不经过 shell。
+    command.arg(format!("--workspace={}", target.display()));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
 }
 
 #[derive(Clone, Deserialize)]
@@ -1088,7 +1182,7 @@ pub struct OpenReceipt {
 #[tauri::command]
 pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, String> {
     if !agent_open_support() {
-        return Err("本版本的 Codex / Kimi Code / DSH 图形界面入口仅在 Windows 启用。".into());
+        return Err("本版本的 Codex / Kimi Code / Kimi Code Desktop / DSH 图形界面入口仅在 Windows 启用。".into());
     }
     // A backend guard also protects multiple windows and callers bypassing the UI.
     let _guard = OPEN_LOCK
@@ -1115,6 +1209,17 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             }
             Ok(OpenReceipt {
                 message: "Kimi Code 工作区已登记，已请求浏览器打开对应会话。",
+            })
+        }
+        Agent::KimiDesktop => {
+            // 与 Codex 相同的回执语义：没有完成回执，启动即返回。已运行实例由
+            // Electron 单实例锁热打开该工作区，无需等待进程退出。
+            let executable = kimi_desktop_executable()?;
+            kimi_desktop_command(&executable, &target)
+                .spawn()
+                .map_err(|_| "Kimi Code Desktop 启动失败，请检查安装后重试。")?;
+            Ok(OpenReceipt {
+                message: "已向 Kimi Code Desktop 发送打开请求，请在 Kimi Code Desktop 中确认。",
             })
         }
         Agent::Dsh => {
