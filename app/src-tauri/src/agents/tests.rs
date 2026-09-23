@@ -566,6 +566,59 @@ async fn backend_busy_guard_rejects_direct_reentry() {
 }
 
 #[test]
+fn kimi_desktop_command_uses_workspace_flag_as_one_argument() {
+    let exe = Path::new(r"C:\Program Files\Kimi Code\Kimi Code.exe");
+    let home = Path::new(r"C:\Users\test\仓库 空格 & #");
+    let command = kimi_desktop_command(exe, home);
+    assert_eq!(command.get_program(), exe);
+    assert_eq!(
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        [format!("--workspace={}", home.display())]
+    );
+}
+
+#[test]
+fn kimi_desktop_command_line_executable_extracts_only_the_exe() {
+    // 注册表值的真实形状（Kimi Code Desktop 1.0.2）。
+    assert_eq!(
+        command_line_executable(r#""C:\Program Files\Kimi Code\Kimi Code.exe" "%1""#),
+        Some(r"C:\Program Files\Kimi Code\Kimi Code.exe".to_string())
+    );
+    // 引号内空格保留；`%1` 参数绝不混入 exe 路径。
+    assert_eq!(
+        command_line_executable(r#""C:\My Apps\Kimi Code.exe" "%1""#),
+        Some(r"C:\My Apps\Kimi Code.exe".to_string())
+    );
+    // 未加引号的命令行取首个空白前的片段。
+    assert_eq!(
+        command_line_executable(r"C:\Tools\Kimi.exe %1"),
+        Some(r"C:\Tools\Kimi.exe".to_string())
+    );
+    // 残缺值不产生候选，由调用方走兜底安装路径。
+    assert_eq!(command_line_executable(r#""unclosed"#), None);
+    assert_eq!(command_line_executable(r#""""#), None);
+    assert_eq!(command_line_executable("   "), None);
+    assert_eq!(command_line_executable(""), None);
+}
+
+#[test]
+fn kimi_desktop_candidates_cover_machine_and_user_installs() {
+    let candidates = kimi_desktop_candidates();
+    assert_eq!(
+        candidates[0],
+        PathBuf::from(r"C:\Program Files\Kimi Code\Kimi Code.exe")
+    );
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        assert!(candidates.contains(
+            &PathBuf::from(&local).join(r"Programs\Kimi Code\Kimi Code.exe")
+        ));
+    }
+}
+
+#[test]
 fn server_start_uses_individual_arguments_and_neutral_cwd() {
     let home = Path::new(r"C:\Users\test\Kimi 空格 & #");
     let exe = Path::new(r"C:\Programs\Kimi Code\kimi.exe");
@@ -1320,8 +1373,9 @@ async fn desktop_open() {
     let agent = match std::env::var("GITGROVE_AGENT_TOOL").as_deref() {
         Ok("codex") => Agent::Codex,
         Ok("kimi") => Agent::Kimi,
+        Ok("kimidesktop") => Agent::KimiDesktop,
         Ok("dsh") => Agent::Dsh,
-        _ => panic!("set GITGROVE_AGENT_TOOL=codex, kimi or dsh"),
+        _ => panic!("set GITGROVE_AGENT_TOOL=codex, kimi, kimidesktop or dsh"),
     };
     let receipt = open_in_agent(path, agent).await.unwrap();
     println!("{}", receipt.message);

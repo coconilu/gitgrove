@@ -171,6 +171,7 @@ pub fn run() {
             launch::save_launch_preferences,
             launch::discover_launch_apps,
             agents::agent_open_support,
+            agents::kimi_desktop_installed,
             agents::open_in_agent,
             fsx::reveal_in_explorer,
             // issues / PRs
