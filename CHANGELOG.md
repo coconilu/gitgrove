@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.4（2026-09-26）
+
+- Merge pull request #93 from coconilu/fix/gh-cli-path-and-pat-link
+- Merge branch 'master' into fix/gh-cli-path-and-pat-link
+- fix(auth): 回应 review r1——gh_program 去掉负结果缓存，补可执行性校验
+- fix(auth): macOS GUI 下找不到 brew 安装的 gh + 登录页补 PAT 创建引导链接
+
 ## v1.3.3（2026-09-23）
 
 - Merge pull request #91 from coconilu/feat/kimi-code-desktop-90
