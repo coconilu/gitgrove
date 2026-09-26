@@ -1,6 +1,11 @@
 import { useState } from "react";
 import * as api from "../api";
 import { useStore } from "../store";
+import { ExternalLink } from "./ProjectDetail";
+
+// 经典 PAT 创建页，预选 repo + workflow scope（与上方说明一致），描述占位
+const NEW_TOKEN_URL =
+	"https://github.com/settings/tokens/new?scopes=repo,workflow&description=GitGrove";
 
 export default function LoginScreen() {
 	const { reloadAuth, toast } = useStore();
@@ -71,7 +76,8 @@ export default function LoginScreen() {
 					}}
 				/>
 				<p style={{ color: "var(--muted)", fontSize: 12, marginBottom: 8 }}>
-					或粘贴 Personal Access Token（需 repo + workflow 权限）：
+					或粘贴 Personal Access Token（需 repo + workflow 权限）：{" "}
+					<ExternalLink url={NEW_TOKEN_URL}>去 GitHub 创建 ↗</ExternalLink>
 				</p>
 				<input
 					className="input"

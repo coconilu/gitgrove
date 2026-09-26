@@ -134,11 +134,90 @@ fn kill_tree_bounded(child: &mut std::process::Child) -> bool {
     true
 }
 
+/// 解析 gh 可执行文件。GUI 进程（macOS 从 Finder/Dock 启动、Linux 桌面会话
+/// 启动）继承不到用户 shell 的 PATH——brew 装的 gh 在 /opt/homebrew/bin 或
+/// /usr/local/bin，按名 spawn 直接 ENOENT，表现为「终端里 gh auth status
+/// 明明已登录，应用却提示未检测到 gh CLI 登录态」。优先按 PATH 解析（保持
+/// 终端启动与 Windows 行为不变），解析不到时回落常见安装位置。
+/// 不做缓存：调用频率低（登录/同步链路），PATH 扫描是十几次 exists()，
+/// 开销可忽略；不缓存才能保证「应用运行期间才装好 gh」时下次点击即生效
+/// （review r1：OnceLock 会把负结果钉死，装完 gh 必须重启应用）。
+fn gh_program() -> String {
+    if on_path("gh") {
+        return "gh".to_string();
+    }
+    for candidate in gh_fallback_paths() {
+        if executable_file(std::path::Path::new(&candidate)) {
+            return candidate;
+        }
+    }
+    // 兜底：spawn 失败仍按「检测不到 gh」处理（run_bounded 返回 None）
+    "gh".to_string()
+}
+
+/// 可执行文件校验：Unix 上同名普通文件/目录不能误判命中（review r1 nit）
+#[cfg(unix)]
+fn executable_file(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata()
+        .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn executable_file(p: &std::path::Path) -> bool {
+    p.is_file()
+}
+
+/// PATH 中是否存在名为 `prog` 的可执行文件（Windows 补 .exe；.cmd/.bat  shim
+/// 需要 cmd /c 才能执行，Command::new 直接 spawn 不了，不算命中）
+fn on_path(prog: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let names: Vec<String> = if cfg!(windows) {
+        vec![format!("{prog}.exe"), prog.to_string()]
+    } else {
+        vec![prog.to_string()]
+    };
+    std::env::split_paths(&paths)
+        .any(|dir| names.iter().any(|n| executable_file(&dir.join(n))))
+}
+
+#[cfg(target_os = "macos")]
+fn gh_fallback_paths() -> Vec<String> {
+    vec![
+        "/opt/homebrew/bin/gh".into(), // Apple Silicon Homebrew
+        "/usr/local/bin/gh".into(),    // Intel Homebrew / 手动 pkg 安装
+        "/opt/local/bin/gh".into(),    // MacPorts
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn gh_fallback_paths() -> Vec<String> {
+    let mut v = vec![
+        "/usr/bin/gh".into(),
+        "/usr/local/bin/gh".into(),
+        "/snap/bin/gh".into(),
+        "/home/linuxbrew/.linuxbrew/bin/gh".into(), // Homebrew on Linux
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        v.push(format!("{}/.local/bin/gh", home.to_string_lossy()));
+    }
+    v
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn gh_fallback_paths() -> Vec<String> {
+    // Windows 安装器（winget/msi）会写机器/用户 PATH，GUI 与终端一致，无需兜底
+    Vec::new()
+}
+
 /// gh CLI 兜底取 token。#74：走 run_bounded 有界等待（GH_CLI_TIMEOUT），
 /// 超时按失败处理返回 None，ensure_token 随即报「未登录」，前端横幅可展示，
 /// 同步不再被挂死的 gh 进程无限拖住。
 fn try_gh_cli(state: &AppState) -> Option<String> {
-    let mut cmd = crate::git::new_cmd("gh");
+    let mut cmd = crate::git::new_cmd(&gh_program());
     cmd.args(["auth", "token"]);
     let out = run_bounded(cmd, GH_CLI_TIMEOUT)?;
     if !out.status.success() {
@@ -825,6 +904,29 @@ pub async fn workflow_details(state: State<'_, AppState>, owner: String, repo: S
     if !response.status().is_success() { return Err(format!("无法读取流程配置: HTTP {}", response.status())); }
     let source = response.text().await.map_err(|e| format!("读取流程配置失败: {e}"))?;
     parse_workflow_details(&source, default_branch.into())
+}
+
+#[cfg(test)]
+mod gh_resolution_tests {
+    use super::{gh_fallback_paths, on_path};
+
+    #[test]
+    fn on_path_misses_nonexistent_program() {
+        assert!(!on_path("gitgrove-definitely-not-a-real-binary-xyz"));
+    }
+
+    /// 兜底路径必须是绝对路径——它们存在的意义就是绕开 PATH 解析；
+    /// Windows 无兜底清单（GUI 与终端 PATH 一致），显式断言为空而不是空转
+    #[test]
+    fn fallback_paths_are_absolute() {
+        let paths = gh_fallback_paths();
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert!(paths.is_empty(), "Windows 不应有 fallback 清单: {paths:?}");
+        for p in &paths {
+            assert!(std::path::Path::new(p).is_absolute(), "{p} 应为绝对路径");
+            assert!(p.ends_with("gh"), "{p} 应指向 gh 可执行文件");
+        }
+    }
 }
 
 #[cfg(test)]
