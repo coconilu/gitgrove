@@ -42,7 +42,7 @@ export interface AuthState {
 	login: string;
 	name: string;
 	avatarUrl: string;
-	source: string; // "keyring" | "gh-cli" | "pat"
+	source: string; // "本地存储" | "gh CLI" | "PAT"
 	/** 当前 token 是否具备 project scope；null = 无法判断（如 fine-grained PAT 无 X-OAuth-Scopes 头） */
 	hasProjectScope: boolean | null;
 }
