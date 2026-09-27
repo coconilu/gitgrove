@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.5（2026-09-27）
+
+- Merge pull request #96 from coconilu/fix/macos-git-stub-95
+- test(git): 裸 macOS 上跳过 git_program 实测，避免 stub 弹窗挂住测试（review r1 nit）
+- fix(git): macOS GUI 下克隆命中 xcode-select stub（退出码 69）；clone 错误带出 stderr 末行
+
 ## v1.3.4（2026-09-26）
 
 - Merge pull request #93 from coconilu/fix/gh-cli-path-and-pat-link
