@@ -10,14 +10,141 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn new_cmd(program: &str) -> Command {
+    // git 走 git_program() 解析：macOS GUI 进程 PATH 极简，brew 的 git 不在
+    // 其中；而 PATH 里的 /usr/bin/git 可能是 xcode-select 占位 stub
+    let is_git = program == "git";
+    let resolved;
+    let program = if is_git {
+        resolved = git_program();
+        resolved.as_str()
+    } else {
+        program
+    };
     let mut c = Command::new(program);
     #[cfg(windows)]
     c.creation_flags(CREATE_NO_WINDOW);
-    if program == "git" {
+    if is_git {
         // 禁止任何形式的交互式凭据提示（否则无控制台环境下会永久挂起）
         c.env("GIT_TERMINAL_PROMPT", "0");
     }
     c
+}
+
+/// --- 外部工具可执行文件解析（gh 的同款模式见 github.rs::gh_program） ---
+/// GUI 进程（macOS 从 Finder/Dock 启动）继承不到用户 shell 的 PATH，按名
+/// spawn 会 ENOENT，统一走「PATH 扫描 → 平台常见绝对路径兜底」。
+
+/// PATH 中名为 `prog` 的可执行文件绝对路径，按 PATH 顺序。
+/// Windows 补 .exe；.cmd/.bat shim 需要 cmd /c 才能执行，Command::new 直接
+/// spawn 不了，不算命中。
+pub fn path_candidates(prog: &str) -> Vec<PathBuf> {
+    let names: Vec<String> = if cfg!(windows) {
+        vec![format!("{prog}.exe"), prog.to_string()]
+    } else {
+        vec![prog.to_string()]
+    };
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
+                .filter(|p| executable_file(p))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// PATH 中是否存在名为 `prog` 的可执行文件
+pub fn on_path(prog: &str) -> bool {
+    !path_candidates(prog).is_empty()
+}
+
+/// 可执行文件校验：Unix 上同名普通文件/目录不能误判命中
+#[cfg(unix)]
+pub fn executable_file(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata()
+        .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+pub fn executable_file(p: &Path) -> bool {
+    p.is_file()
+}
+
+/// 解析可用的 git 可执行文件。
+/// macOS：/usr/bin/git 在未安装 Command Line Tools 时是 xcode-select 占位
+/// stub——能 spawn，但任何子命令都以退出码 69（EX_UNAVAILABLE）失败，stderr
+/// 只有一句 "xcode-select: note: No developer tools were found..."（GUI 进程里
+/// 用户看到的就是「git clone 失败（退出码 Some(69)）」）。「文件存在」不等于
+/// 「可用」：macOS 下仅当 CLT/Xcode 真的装了才认 /usr/bin/git，否则优先
+/// brew/MacPorts 的真实 git。不通过试跑 `git --version` 验证——stub 被调用时
+/// 可能弹出系统安装对话框把进程挂住。
+/// 正结果 OnceLock 缓存（可用的 git 不会在运行中消失）；找不到不缓存——用户
+/// 装好 CLT/git 后下一次操作即生效。
+pub fn git_program() -> String {
+    static GIT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(p) = GIT.get() {
+        return p.clone();
+    }
+    let found = find_git();
+    if let Some(p) = &found {
+        let _ = GIT.set(p.clone());
+    }
+    // 找不到时仍按名调用：macOS 上会命中 stub，由它触发系统的 CLT 安装引导，
+    // 用户装完即自愈；调用方把 stub 的 stderr 末行带进错误文案说明原因
+    found.unwrap_or_else(|| "git".into())
+}
+
+fn find_git() -> Option<String> {
+    path_candidates("git")
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .chain(git_fallback_paths())
+        .filter(|p| executable_file(Path::new(p)))
+        .find(|p| git_usable(p))
+}
+
+#[cfg(target_os = "macos")]
+fn git_usable(p: &str) -> bool {
+    // /usr/bin/git 是 stub 还是真 git 取决于 CLT/Xcode 是否安装
+    p != "/usr/bin/git" || macos_clt_installed()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn git_usable(_p: &str) -> bool {
+    true // 候选已过 executable_file 校验
+}
+
+#[cfg(target_os = "macos")]
+fn macos_clt_installed() -> bool {
+    Path::new("/Library/Developer/CommandLineTools/usr/bin/git").exists()
+        || Path::new("/Applications/Xcode.app/Contents/Developer/usr/bin/git").exists()
+}
+
+#[cfg(target_os = "macos")]
+fn git_fallback_paths() -> Vec<String> {
+    vec![
+        "/opt/homebrew/bin/git".into(), // Apple Silicon Homebrew
+        "/usr/local/bin/git".into(),    // Intel Homebrew / git-osx-installer
+        "/opt/local/bin/git".into(),    // MacPorts
+        // CLT 的真实二进制，绕过 /usr/bin/git shim 直达
+        "/Library/Developer/CommandLineTools/usr/bin/git".into(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn git_fallback_paths() -> Vec<String> {
+    vec![
+        "/usr/bin/git".into(),
+        "/usr/local/bin/git".into(),
+        "/snap/bin/git".into(),
+    ]
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn git_fallback_paths() -> Vec<String> {
+    Vec::new() // Windows：Git 安装器写 PATH，GUI 与终端一致
 }
 
 /// 把 token 注入 https URL（x-access-token 形式；extraheader 在部分代理下会挂起 git）
@@ -509,5 +636,23 @@ pub fn parse_github_url(url: &str) -> Option<(String, String)> {
         None
     } else {
         Some((owner, repo))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 解析出的 git 必须真的能跑——macOS stub（退出码 69）不满足这条
+    #[test]
+    fn git_program_resolves_to_a_working_git() {
+        let out = run(&["--version"], None).expect("git --version 应成功");
+        assert!(out.trim_start().starts_with("git version"), "意外输出: {out}");
+    }
+
+    #[test]
+    fn path_candidates_misses_nonexistent_program() {
+        assert!(path_candidates("gitgrove-definitely-not-a-real-binary-xyz").is_empty());
+        assert!(!on_path("gitgrove-definitely-not-a-real-binary-xyz"));
     }
 }

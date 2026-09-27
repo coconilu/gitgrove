@@ -142,46 +142,18 @@ fn kill_tree_bounded(child: &mut std::process::Child) -> bool {
 /// 不做缓存：调用频率低（登录/同步链路），PATH 扫描是十几次 exists()，
 /// 开销可忽略；不缓存才能保证「应用运行期间才装好 gh」时下次点击即生效
 /// （review r1：OnceLock 会把负结果钉死，装完 gh 必须重启应用）。
+/// on_path/executable_file 与 git 解析共用 git.rs 的实现。
 fn gh_program() -> String {
-    if on_path("gh") {
+    if crate::git::on_path("gh") {
         return "gh".to_string();
     }
     for candidate in gh_fallback_paths() {
-        if executable_file(std::path::Path::new(&candidate)) {
+        if crate::git::executable_file(std::path::Path::new(&candidate)) {
             return candidate;
         }
     }
     // 兜底：spawn 失败仍按「检测不到 gh」处理（run_bounded 返回 None）
     "gh".to_string()
-}
-
-/// 可执行文件校验：Unix 上同名普通文件/目录不能误判命中（review r1 nit）
-#[cfg(unix)]
-fn executable_file(p: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata()
-        .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn executable_file(p: &std::path::Path) -> bool {
-    p.is_file()
-}
-
-/// PATH 中是否存在名为 `prog` 的可执行文件（Windows 补 .exe；.cmd/.bat  shim
-/// 需要 cmd /c 才能执行，Command::new 直接 spawn 不了，不算命中）
-fn on_path(prog: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    let names: Vec<String> = if cfg!(windows) {
-        vec![format!("{prog}.exe"), prog.to_string()]
-    } else {
-        vec![prog.to_string()]
-    };
-    std::env::split_paths(&paths)
-        .any(|dir| names.iter().any(|n| executable_file(&dir.join(n))))
 }
 
 #[cfg(target_os = "macos")]
@@ -908,7 +880,8 @@ pub async fn workflow_details(state: State<'_, AppState>, owner: String, repo: S
 
 #[cfg(test)]
 mod gh_resolution_tests {
-    use super::{gh_fallback_paths, on_path};
+    use super::gh_fallback_paths;
+    use crate::git::on_path;
 
     #[test]
     fn on_path_misses_nonexistent_program() {
