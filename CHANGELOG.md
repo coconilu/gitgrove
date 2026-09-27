@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.6（2026-09-27）
+
+- Merge pull request #98 from coconilu/fix/macos-git-license-and-keychain
+- fix(auth): 回应 review——token 迁移幂等（写成才删钥匙串）+ 原子写 + 权限收紧
+- fix(macos): git 候选优先 CLT 真实二进制绕开 Xcode 许可门槛；token 改 0600 文件存储消除钥匙串弹窗
+
 ## v1.3.5（2026-09-27）
 
 - Merge pull request #96 from coconilu/fix/macos-git-stub-95
