@@ -646,6 +646,12 @@ mod tests {
     /// 解析出的 git 必须真的能跑——macOS stub（退出码 69）不满足这条
     #[test]
     fn git_program_resolves_to_a_working_git() {
+        // 什么都没解析到时 git_program 兜底返回裸 "git"；在无 CLT 的裸 macOS 上
+        // 试跑会命中 stub 并弹系统安装对话框——跳过实测而不是卡死测试进程
+        if git_program() == "git" {
+            eprintln!("未找到可用 git 安装（可能是无 CLT 的裸 macOS），跳过实测");
+            return;
+        }
         let out = run(&["--version"], None).expect("git --version 应成功");
         assert!(out.trim_start().starts_with("git version"), "意外输出: {out}");
     }
