@@ -11,8 +11,100 @@ use tauri::State;
 
 use crate::AppState;
 
-const KEYRING_SERVICE: &str = "gh-projects";
-const KEYRING_USER: &str = "github-token";
+/// token 持久化存储，按平台分实现。
+///
+/// macOS 特意不用登录钥匙串：应用没有 Developer ID 签名（ad-hoc），钥匙串
+/// ACL 按 cdhash 认二进制——每次升级覆盖安装后，第一次读 token 都会重弹
+/// 「GitGrove 想要使用你储存在钥匙串中的机密信息，请输入登录钥匙串密码」
+/// 授权框，用户困扰且无收益。改为 0600 权限的 ~/.config/gh-projects/github-token
+/// 文件：安全水位与 gh CLI 默认把 OAuth token 明文存 ~/.config/gh/hosts.yml
+/// 一致，升级零打扰。首次读取时把老版本留在钥匙串里的 token 一次性迁移过来
+/// 并删掉钥匙串条目。Windows / Linux 仍用系统凭据管理器（无此提示问题）。
+mod token_store {
+    const KEYRING_SERVICE: &str = "gh-projects";
+    const KEYRING_USER: &str = "github-token";
+
+    fn keyring_entry() -> Result<keyring::Entry, String> {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| format!("keyring 不可用: {e}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn token_file() -> std::path::PathBuf {
+        crate::git::home_dir().join(".config/gh-projects/github-token")
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn get() -> Option<String> {
+        if let Ok(t) = std::fs::read_to_string(token_file()) {
+            let t = t.trim().to_string();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+        // 一次性迁移：老版本把 token 存在登录钥匙串
+        if let Ok(entry) = keyring_entry() {
+            if let Ok(t) = entry.get_password() {
+                if !t.is_empty() {
+                    let _ = set(&t);
+                    let _ = entry.delete_credential();
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn set(t: &str) -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = token_file();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+        // mode(0o600) 在创建时生效，不留 0644 窗口
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("写入 token 失败: {e}"))?;
+        f.write_all(t.as_bytes())
+            .map_err(|e| format!("写入 token 失败: {e}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn delete() {
+        let _ = std::fs::remove_file(token_file());
+        // 顺手清掉可能残留的老钥匙串条目
+        if let Ok(entry) = keyring_entry() {
+            let _ = entry.delete_credential();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn get() -> Option<String> {
+        let t = keyring_entry().ok()?.get_password().ok()?;
+        if t.is_empty() { None } else { Some(t) }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn set(t: &str) -> Result<(), String> {
+        keyring_entry()?
+            .set_password(t)
+            .map_err(|e| format!("写入凭据管理器失败: {e}"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn delete() {
+        if let Ok(entry) = keyring_entry() {
+            let _ = entry.delete_credential();
+        }
+    }
+}
 
 /// 项目无 GitHub 身份时，按 owner/repo 调 API 的 command 统一返回该错误（前端据此降级）
 fn require_repo(owner: &str, repo: &str) -> Result<(), String> {
@@ -23,29 +115,21 @@ fn require_repo(owner: &str, repo: &str) -> Result<(), String> {
     }
 }
 
-fn keyring_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| format!("keyring 不可用: {e}"))
-}
-
-/// 取 token：内存 → keyring（不含 gh CLI 兜底；auth_status 需要区分来源）
+/// 取 token：内存 → 本地存储（不含 gh CLI 兜底；auth_status 需要区分来源）
 fn stored_token(state: &AppState) -> Option<String> {
     if let Some(t) = state.token.lock().unwrap().clone() {
         return Some(t);
     }
-    if let Ok(entry) = keyring_entry() {
-        if let Ok(t) = entry.get_password() {
-            if !t.is_empty() {
-                *state.token.lock().unwrap() = Some(t.clone());
-                return Some(t);
-            }
-        }
+    if let Some(t) = token_store::get() {
+        *state.token.lock().unwrap() = Some(t.clone());
+        return Some(t);
     }
     None
 }
 
-/// 取 token：内存 → keyring → gh CLI（成功后写回 keyring）。
+/// 取 token：内存 → 本地存储 → gh CLI（成功后写回本地存储）。
 /// gh CLI 兜底必须在这里就有：pm_sync_github 等 command 不保证 auth_status 先行
-/// 运行过（#66 排查记录：keyring 为空时所有命令直接「未登录」失败，即便本机
+/// 运行过（#66 排查记录：本地存储为空时所有命令直接「未登录」失败，即便本机
 /// gh 已登录）；错误文案给出两种补救路径，前端错误横幅直接展示。
 pub fn ensure_token(state: &AppState) -> Result<String, String> {
     if let Some(t) = stored_token(state) {
@@ -199,10 +283,8 @@ fn try_gh_cli(state: &AppState) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    // 写回 keyring
-    if let Ok(entry) = keyring_entry() {
-        let _ = entry.set_password(&t);
-    }
+    // 写回本地存储
+    let _ = token_store::set(&t);
     *state.token.lock().unwrap() = Some(t.clone());
     Some(t)
 }
@@ -414,17 +496,17 @@ pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, Strin
         *state.has_project_scope.lock().unwrap() = None;
         logged_out()
     };
-    // 内存 / keyring 的存储 token。失效（过期/被撤销）不能直接判未登录：
-    // keyring 可能残留旧 token，而 gh CLI 往往持有新 token，可救回登录态（#66）
+    // 内存 / 本地存储的 token。失效（过期/被撤销）不能直接判未登录：
+    // 本地存储可能残留旧 token，而 gh CLI 往往持有新 token，可救回登录态（#66）
     if let Some(t) = stored_token(&state) {
-        if let Ok(me) = fetch_viewer(&state.http, &t, "keyring").await {
+        if let Ok(me) = fetch_viewer(&state.http, &t, "本地存储").await {
             record(&me);
             return Ok(me);
         }
         // 清内存槽，避免遮蔽下面 try_gh_cli 的写回
         *state.token.lock().unwrap() = None;
     }
-    // gh CLI 兜底（成功后写回 keyring，之后不依赖 gh 也在）
+    // gh CLI 兜底（成功后写回本地存储，之后不依赖 gh 也在）
     if let Some(t) = try_gh_cli(&state) {
         if let Ok(me) = fetch_viewer(&state.http, &t, "gh CLI").await {
             record(&me);
@@ -437,8 +519,7 @@ pub async fn auth_status(state: State<'_, AppState>) -> Result<AuthState2, Strin
 #[tauri::command]
 pub async fn login_pat(state: State<'_, AppState>, token: String) -> Result<AuthState2, String> {
     let me = fetch_viewer(&state.http, &token, "PAT").await?;
-    let entry = keyring_entry()?;
-    entry.set_password(&token).map_err(|e| format!("写入凭据管理器失败: {e}"))?;
+    token_store::set(&token)?;
     *state.token.lock().unwrap() = Some(token);
     *state.has_project_scope.lock().unwrap() = me.has_project_scope;
     *state.projects_v2_cache.lock().unwrap() = None;
@@ -450,9 +531,7 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     *state.token.lock().unwrap() = None;
     *state.has_project_scope.lock().unwrap() = None;
     *state.projects_v2_cache.lock().unwrap() = None;
-    if let Ok(entry) = keyring_entry() {
-        let _ = entry.delete_credential();
-    }
+    token_store::delete();
     Ok(())
 }
 
@@ -948,15 +1027,17 @@ mod workflow_tests {
         assert_eq!(details.inputs[1].default_value, "false");
     }
 
-    /// 诊断/回归（#66，#[ignore] 本地手动跑）：验证 keyring 里应用存的 token 能被
+    /// 诊断/回归（#66，#[ignore] 本地手动跑）：验证凭据管理器里应用存的 token 能被
     /// 当前构建读出且仍有效（/user 200）。keyring 3 缺 windows-native feature 时
     /// 静默退化为 mock store——get_password 恒 NoEntry，本测试立即失败。
+    /// 仅 Windows/Linux：macOS 自 #97 起改用 0600 文件存储（见 token_store 注释）。
     /// 跑法：cargo test diagnostic_keyring_token -- --ignored --nocapture
+    #[cfg(not(target_os = "macos"))]
     #[test]
     #[ignore = "诊断用：读真实凭据管理器，只打印有效性不打印 token"]
     fn diagnostic_keyring_token() {
-        use super::{Http, KEYRING_SERVICE, KEYRING_USER};
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).expect("entry new");
+        use super::Http;
+        let entry = keyring::Entry::new("gh-projects", "github-token").expect("entry new");
         match entry.get_password() {
             Ok(t) => {
                 println!("keyring 读取成功，token 长度 {}", t.len());
@@ -1056,15 +1137,15 @@ mod workflow_tests {
     }
 
     /// #74 诊断（#[ignore]，本地手动跑）：逐阶段计时复刻 pm_sync_github 的
-    /// 后端链路，定位「GitHub 同步超时」横幅的耗时来源。本机凭据管理器没有
-    /// gh-projects 条目时，走的正是用户机同款「keyring 空 → gh CLI 兜底」路径。
+    /// 后端链路，定位「GitHub 同步超时」横幅的耗时来源。本机 token 存储没有
+    /// gh-projects 条目时，走的正是用户机同款「存储为空 → gh CLI 兜底」路径。
     /// 跑法：cargo test diagnostic_sync_phase_timing -- --ignored --nocapture
     #[test]
     #[ignore = "诊断用：依赖本机凭据 / gh CLI 与 GitHub 连通性"]
     fn diagnostic_sync_phase_timing() {
         use super::{
             GH_CLI_TIMEOUT, AppState, Http, ensure_token, fetch_issues_for_sync,
-            fetch_open_prs_for_sync, keyring_entry, stored_token, try_gh_cli,
+            fetch_open_prs_for_sync, stored_token, token_store, try_gh_cli,
         };
         use crate::pm::store::{PmStore, now_ts};
         use crate::pm::sync::{GithubIssueSnapshot, build_signals, recent_issues};
@@ -1081,15 +1162,13 @@ mod workflow_tests {
         let state = mk_state();
         let t = Instant::now();
         let stored = stored_token(&state);
-        println!("[1] stored_token（内存→keyring）: {:?}，命中={}", t.elapsed(), stored.is_some());
-        // try_gh_cli 成功会把 token 写回 keyring；开始时若为空则事后还原，
+        println!("[1] stored_token（内存→本地存储）: {:?}，命中={}", t.elapsed(), stored.is_some());
+        // try_gh_cli 成功会把 token 写回本地存储；开始时若为空则事后还原，
         // 保证重复跑诊断始终走 gh CLI 路径
-        let keyring_was_empty = stored.is_none();
-        let restore_keyring = || {
-            if keyring_was_empty {
-                if let Ok(entry) = keyring_entry() {
-                    let _ = entry.delete_credential();
-                }
+        let store_was_empty = stored.is_none();
+        let restore_store = || {
+            if store_was_empty {
+                token_store::delete();
             }
         };
 
@@ -1097,13 +1176,13 @@ mod workflow_tests {
         let t = Instant::now();
         let gh = try_gh_cli(&state);
         println!("[2] try_gh_cli（gh auth token，上限 {GH_CLI_TIMEOUT:?}）: {:?}，成功={}", t.elapsed(), gh.is_some());
-        restore_keyring();
+        restore_store();
 
         let state = mk_state();
         let t = Instant::now();
         let token = ensure_token(&state);
         println!("[3] ensure_token 总计: {:?}，成功={}", t.elapsed(), token.is_ok());
-        let token = token.expect("本机应能取到 token（keyring 或 gh CLI），否则无法继续计时");
+        let token = token.expect("本机应能取到 token（本地存储或 gh CLI），否则无法继续计时");
 
         // pm_sync_github 同款：issues 首页与 open PR 并行拉取
         let (issues, prs) = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -1128,7 +1207,7 @@ mod workflow_tests {
         let r = state.pm.lock().unwrap().sync_github("coconilu", "gitgrove", &snapshots, &signals);
         println!("[6] recent_issues + sync_github（upsert {} 条）: {:?}，结果={:?}", snapshots.len(), t.elapsed(), r.as_ref().map(|x| (x.created, x.updated, x.moved)));
         r.expect("sync_github 失败");
-        restore_keyring();
+        restore_store();
     }
 }
 

@@ -14,6 +14,26 @@ use crate::AppState;
 /// 项目无 GitHub 身份时的统一错误（前端据此降级为空状态）
 pub const ERR_NO_GITHUB: &str = "NO_GITHUB_REPO: 该项目未关联 GitHub 仓库（仅支持 github.com 远程）";
 
+/// clone 失败文案：退出码 + 末行 stderr，macOS 的两类环境问题（xcode-select
+/// shim 退出码 69：未装 CLT / 未同意 Xcode 许可）追加可操作的修复指引——
+/// 这两类问题应用自己修不了（需要 sudo 或系统安装器），只能把命令给到用户
+fn clone_error_message(code: Option<i32>, detail: &str) -> String {
+    let mut msg = if detail.is_empty() {
+        format!("git clone 失败（退出码 {code:?}）")
+    } else {
+        format!("git clone 失败（退出码 {code:?}）：{detail}")
+    };
+    if detail.contains("have not agreed to the Xcode license") {
+        msg.push_str("\n\n修复：打开「终端」执行 sudo xcodebuild -license accept（输入开机密码，按提示翻到底并同意），然后重试。");
+    } else if detail.contains("No developer tools were found")
+        || detail.contains("no developer tools were found")
+        || (code == Some(69) && detail.is_empty())
+    {
+        msg.push_str("\n\n修复：打开「终端」执行 xcode-select --install 安装命令行开发者工具（或 brew install git），然后重试。");
+    }
+    msg
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckoutInfo {
@@ -231,14 +251,9 @@ pub async fn clone_repo(app: AppHandle, state: State<'_, AppState>, url: String,
             Ok(())
         } else {
             let _ = std::fs::remove_dir_all(&target_s);
-            // 末行 stderr 往往就是原因（如 macOS 未装 CLT 时 xcode-select stub 的
+            // 末行 stderr 往往就是原因（如 macOS 未装 CLT 时 xcode-select shim 的
             // note、仓库不存在、网络不通），只报退出码用户无从下手
-            let detail = sanitize(&last);
-            Err(if detail.is_empty() {
-                format!("git clone 失败（退出码 {:?}）", status.code())
-            } else {
-                format!("git clone 失败（退出码 {:?}）：{detail}", status.code())
-            })
+            Err(clone_error_message(status.code(), &sanitize(&last)))
         }
     })
     .await

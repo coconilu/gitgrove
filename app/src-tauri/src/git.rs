@@ -73,13 +73,14 @@ pub fn executable_file(p: &Path) -> bool {
 }
 
 /// 解析可用的 git 可执行文件。
-/// macOS：/usr/bin/git 在未安装 Command Line Tools 时是 xcode-select 占位
-/// stub——能 spawn，但任何子命令都以退出码 69（EX_UNAVAILABLE）失败，stderr
-/// 只有一句 "xcode-select: note: No developer tools were found..."（GUI 进程里
-/// 用户看到的就是「git clone 失败（退出码 Some(69)）」）。「文件存在」不等于
-/// 「可用」：macOS 下仅当 CLT/Xcode 真的装了才认 /usr/bin/git，否则优先
-/// brew/MacPorts 的真实 git。不通过试跑 `git --version` 验证——stub 被调用时
-/// 可能弹出系统安装对话框把进程挂住。
+/// macOS 上 /usr/bin/git 是 xcode-select shim，有两种失效形态（退出码都是
+/// 69 / EX_UNAVAILABLE）：未装 CLT 时是占位 stub；装了 Xcode 但没同意许可时
+/// shim 路由到 Xcode 的 git，报 "You have not agreed to the Xcode license"。
+/// 「文件存在」不等于「可用」，所以 shim 只在确认 CLT/Xcode 存在时才列入候选，
+/// 且排在最后——CLT 的真实二进制（/Library/Developer/CommandLineTools/...）
+/// 和 brew/MacPorts 的 git 都不受 Xcode 许可门槛影响，优先用它们。
+/// 不通过试跑 `git --version` 验证——stub 被调用时可能弹系统安装对话框把
+/// 进程挂住。
 /// 正结果 OnceLock 缓存（可用的 git 不会在运行中消失）；找不到不缓存——用户
 /// 装好 CLT/git 后下一次操作即生效。
 pub fn git_program() -> String {
@@ -87,50 +88,55 @@ pub fn git_program() -> String {
     if let Some(p) = GIT.get() {
         return p.clone();
     }
-    let found = find_git();
+    let found = git_candidates()
+        .into_iter()
+        .find(|p| executable_file(Path::new(p)));
     if let Some(p) = &found {
         let _ = GIT.set(p.clone());
     }
-    // 找不到时仍按名调用：macOS 上会命中 stub，由它触发系统的 CLT 安装引导，
-    // 用户装完即自愈；调用方把 stub 的 stderr 末行带进错误文案说明原因
+    // 找不到时仍按名调用：macOS 上会命中 shim，由它触发系统的 CLT 安装引导，
+    // 用户装完即自愈；调用方把 shim 的 stderr 末行带进错误文案说明原因
     found.unwrap_or_else(|| "git".into())
 }
 
-fn find_git() -> Option<String> {
+/// git 候选，按优先级排序
+#[cfg(target_os = "macos")]
+fn git_candidates() -> Vec<String> {
+    let mut v: Vec<String> = path_candidates("git")
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        // shim 移出 PATH 段，排到最后再考虑
+        .filter(|p| p != "/usr/bin/git")
+        .collect();
+    for p in [
+        "/opt/homebrew/bin/git", // Apple Silicon Homebrew
+        "/usr/local/bin/git",    // Intel Homebrew / git-osx-installer
+        "/opt/local/bin/git",    // MacPorts
+        // CLT 真实二进制：不受 xcode-select 指向与 Xcode 许可影响
+        "/Library/Developer/CommandLineTools/usr/bin/git",
+    ] {
+        v.push(p.into());
+    }
+    // shim 最后兜底：CLT/Xcode 在才考虑；许可未同意的场景由 clone 错误文案引导
+    if macos_clt_installed() {
+        v.push("/usr/bin/git".into());
+    }
+    v
+}
+
+#[cfg(not(target_os = "macos"))]
+fn git_candidates() -> Vec<String> {
     path_candidates("git")
         .into_iter()
         .map(|p| p.to_string_lossy().into_owned())
         .chain(git_fallback_paths())
-        .filter(|p| executable_file(Path::new(p)))
-        .find(|p| git_usable(p))
-}
-
-#[cfg(target_os = "macos")]
-fn git_usable(p: &str) -> bool {
-    // /usr/bin/git 是 stub 还是真 git 取决于 CLT/Xcode 是否安装
-    p != "/usr/bin/git" || macos_clt_installed()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn git_usable(_p: &str) -> bool {
-    true // 候选已过 executable_file 校验
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
 fn macos_clt_installed() -> bool {
     Path::new("/Library/Developer/CommandLineTools/usr/bin/git").exists()
         || Path::new("/Applications/Xcode.app/Contents/Developer/usr/bin/git").exists()
-}
-
-#[cfg(target_os = "macos")]
-fn git_fallback_paths() -> Vec<String> {
-    vec![
-        "/opt/homebrew/bin/git".into(), // Apple Silicon Homebrew
-        "/usr/local/bin/git".into(),    // Intel Homebrew / git-osx-installer
-        "/opt/local/bin/git".into(),    // MacPorts
-        // CLT 的真实二进制，绕过 /usr/bin/git shim 直达
-        "/Library/Developer/CommandLineTools/usr/bin/git".into(),
-    ]
 }
 
 #[cfg(target_os = "linux")]
