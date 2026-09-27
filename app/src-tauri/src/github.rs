@@ -13,17 +13,21 @@ use crate::AppState;
 
 /// token 持久化存储，按平台分实现。
 ///
-/// macOS 特意不用登录钥匙串：应用没有 Developer ID 签名（ad-hoc），钥匙串
-/// ACL 按 cdhash 认二进制——每次升级覆盖安装后，第一次读 token 都会重弹
-/// 「GitGrove 想要使用你储存在钥匙串中的机密信息，请输入登录钥匙串密码」
-/// 授权框，用户困扰且无收益。改为 0600 权限的 ~/.config/gh-projects/github-token
+/// macOS 完全不碰登录钥匙串：应用没有 Developer ID 签名（ad-hoc），钥匙串
+/// ACL 按 cdhash 认二进制——每次升级覆盖安装后，任何读写老条目的操作都会
+/// 重弹「GitGrove 想要使用你储存在钥匙串中的机密信息」授权框，连「读出来
+/// 迁移到新存储」这一步本身也会弹（v1.3.6 的教训），所以这里连一次性迁移
+/// 都不做，老条目直接遗弃。改为 0600 权限的 ~/.config/gh-projects/github-token
 /// 文件：安全水位与 gh CLI 默认把 OAuth token 明文存 ~/.config/gh/hosts.yml
-/// 一致，升级零打扰。首次读取时把老版本留在钥匙串里的 token 一次性迁移过来
-/// 并删掉钥匙串条目。Windows / Linux 仍用系统凭据管理器（无此提示问题）。
+/// 一致，升级零打扰。代价是老版本用户升级后需重新登录一次（点一下 gh CLI
+/// 登录即可）。Windows / Linux 仍用系统凭据管理器（无此提示问题）。
 mod token_store {
+    #[cfg(not(target_os = "macos"))]
     const KEYRING_SERVICE: &str = "gh-projects";
+    #[cfg(not(target_os = "macos"))]
     const KEYRING_USER: &str = "github-token";
 
+    #[cfg(not(target_os = "macos"))]
     fn keyring_entry() -> Result<keyring::Entry, String> {
         keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| format!("keyring 不可用: {e}"))
     }
@@ -35,26 +39,8 @@ mod token_store {
 
     #[cfg(target_os = "macos")]
     pub fn get() -> Option<String> {
-        if let Ok(t) = std::fs::read_to_string(token_file()) {
-            let t = t.trim().to_string();
-            if !t.is_empty() {
-                return Some(t);
-            }
-        }
-        // 一次性迁移：老版本把 token 存在登录钥匙串。写文件成功才删钥匙串
-        // 条目——写失败时保留条目，下次 get() 重试迁移，天然幂等；无论写没写成，
-        // 本次读到的 token 都照常返回（不在会话内丢登录态）
-        if let Ok(entry) = keyring_entry() {
-            if let Ok(t) = entry.get_password() {
-                if !t.is_empty() {
-                    if set(&t).is_ok() {
-                        let _ = entry.delete_credential();
-                    }
-                    return Some(t);
-                }
-            }
-        }
-        None
+        let t = std::fs::read_to_string(token_file()).ok()?.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
     }
 
     #[cfg(target_os = "macos")]
@@ -98,10 +84,8 @@ mod token_store {
     #[cfg(target_os = "macos")]
     pub fn delete() {
         let _ = std::fs::remove_file(token_file());
-        // 顺手清掉可能残留的老钥匙串条目
-        if let Ok(entry) = keyring_entry() {
-            let _ = entry.delete_credential();
-        }
+        // 注意：不清老版本留在钥匙串里的条目——delete_credential 同样可能触发
+        // 授权弹窗，遗弃它比弹窗骚扰用户强
     }
 
     #[cfg(not(target_os = "macos"))]
