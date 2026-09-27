@@ -713,7 +713,7 @@ mod tests {
     }
 
     /// 真实网络冒烟（#[ignore]，本地手动跑；CI 不依赖外网/登录）：
-    /// 复刻 pm_sync_github 的完整后端链路——ensure_token（keyring → gh CLI 兜底，
+    /// 复刻 pm_sync_github 的完整后端链路——ensure_token（本地存储 → gh CLI 兜底，
     /// 正是 #66 断掉的环节）→ 并行拉 issues+open PR → recent_issues 过滤 →
     /// 写入临时库。用公开仓 coconilu/gitgrove 验证验收标准：sync 后 open issue
     /// 全部落 todo（含 #53/#40/#29）。
