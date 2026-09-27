@@ -23,7 +23,9 @@ fn clone_error_message(code: Option<i32>, detail: &str) -> String {
     } else {
         format!("git clone 失败（退出码 {code:?}）：{detail}")
     };
-    if detail.contains("have not agreed to the Xcode license") {
+    if detail.contains("have not agreed to the Xcode license")
+        || detail.contains("xcodebuild -license")
+    {
         msg.push_str("\n\n修复：打开「终端」执行 sudo xcodebuild -license accept（输入开机密码，按提示翻到底并同意），然后重试。");
     } else if detail.contains("No developer tools were found")
         || detail.contains("no developer tools were found")

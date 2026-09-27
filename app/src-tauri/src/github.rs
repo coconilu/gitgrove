@@ -41,12 +41,15 @@ mod token_store {
                 return Some(t);
             }
         }
-        // 一次性迁移：老版本把 token 存在登录钥匙串
+        // 一次性迁移：老版本把 token 存在登录钥匙串。写文件成功才删钥匙串
+        // 条目——写失败时保留条目，下次 get() 重试迁移，天然幂等；无论写没写成，
+        // 本次读到的 token 都照常返回（不在会话内丢登录态）
         if let Ok(entry) = keyring_entry() {
             if let Ok(t) = entry.get_password() {
                 if !t.is_empty() {
-                    let _ = set(&t);
-                    let _ = entry.delete_credential();
+                    if set(&t).is_ok() {
+                        let _ = entry.delete_credential();
+                    }
                     return Some(t);
                 }
             }
@@ -64,16 +67,32 @@ mod token_store {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
-        // mode(0o600) 在创建时生效，不留 0644 窗口
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| format!("写入 token 失败: {e}"))?;
-        f.write_all(t.as_bytes())
-            .map_err(|e| format!("写入 token 失败: {e}"))
+        // 原子写：先写同目录临时文件再 rename，避免崩溃/并发留下半截 token
+        // （读到截断串会被当成有效 token，表现为「看似已登录但全部 401」）。
+        // mode(0o600) 在创建时生效，不留 0644 窗口。
+        let tmp = path.with_extension("tmp");
+        let write_tmp = || -> Result<(), String> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| format!("写入 token 失败: {e}"))?;
+            f.write_all(t.as_bytes())
+                .and_then(|()| f.sync_all())
+                .map_err(|e| format!("写入 token 失败: {e}"))
+        };
+        let r = write_tmp().and_then(|()| {
+            std::fs::rename(&tmp, &path).map_err(|e| format!("写入 token 失败: {e}"))
+        });
+        if r.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return r;
+        }
+        // 纵深防御：文件若已以更宽权限存在（如从备份恢复的 0644），收紧
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        Ok(())
     }
 
     #[cfg(target_os = "macos")]
