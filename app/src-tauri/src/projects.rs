@@ -187,6 +187,15 @@ pub async fn clone_repo(app: AppHandle, state: State<'_, AppState>, url: String,
         let mut args: Vec<String> = git::network_args();
         let clone_url = git::auth_url(&url_s, &token);
         args.extend(["clone".into(), "--progress".into(), clone_url, target_s.clone()]);
+        // token 可能为空（公开仓库未登录克隆）；str::replace("", ...) 会在每个
+        // 字符间插入替换串，脱敏前必须守卫
+        let sanitize = |s: &str| {
+            if token.is_empty() {
+                s.to_string()
+            } else {
+                s.replace(&token, "***")
+            }
+        };
         let mut child = git::new_cmd("git")
             .args(&args)
             .stdin(Stdio::null())
@@ -194,10 +203,10 @@ pub async fn clone_repo(app: AppHandle, state: State<'_, AppState>, url: String,
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("无法启动 git: {e}"))?;
+        let mut last = String::new();
         if let Some(err) = child.stderr.take() {
             let reader = std::io::BufReader::new(err);
             let mut lines = reader.lines();
-            let mut last = String::new();
             while let Some(Ok(chunk)) = lines.next() {
                 // git 进度用 \r 分隔，取最后一段
                 for seg in chunk.split('\r') {
@@ -208,7 +217,7 @@ pub async fn clone_repo(app: AppHandle, state: State<'_, AppState>, url: String,
                 }
                 if !last.is_empty() {
                     // 进度行里不应含 token，但兜底脱敏
-                    let _ = app2.emit("clone-progress", last.replace(&token, "***"));
+                    let _ = app2.emit("clone-progress", sanitize(&last));
                 }
             }
         }
@@ -222,7 +231,14 @@ pub async fn clone_repo(app: AppHandle, state: State<'_, AppState>, url: String,
             Ok(())
         } else {
             let _ = std::fs::remove_dir_all(&target_s);
-            Err(format!("git clone 失败（退出码 {:?}）", status.code()))
+            // 末行 stderr 往往就是原因（如 macOS 未装 CLT 时 xcode-select stub 的
+            // note、仓库不存在、网络不通），只报退出码用户无从下手
+            let detail = sanitize(&last);
+            Err(if detail.is_empty() {
+                format!("git clone 失败（退出码 {:?}）", status.code())
+            } else {
+                format!("git clone 失败（退出码 {:?}）：{detail}", status.code())
+            })
         }
     })
     .await
