@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.7（2026-09-27）
+
+- Merge pull request #100 from coconilu/fix/macos-keychain-never-touch
+- Merge branch 'master' into fix/macos-keychain-never-touch
+- chore: keyring 依赖按平台裁剪（macOS 不再链接）+ 修正注释漂移
+- fix(macOS): 彻底不碰钥匙串，根除升级后的授权弹窗
+
 ## v1.3.6（2026-09-27）
 
 - Merge pull request #98 from coconilu/fix/macos-git-license-and-keychain
