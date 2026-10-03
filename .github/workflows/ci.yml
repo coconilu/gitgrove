@@ -67,7 +67,7 @@ jobs:
         run: cargo test --manifest-path app/src-tauri/Cargo.toml --lib
 
   # check job 只跑 Windows，跨平台编译错误（如 #[cfg] 摘掉的函数被 cfg! 分支引用）拦不住；
-  # 这里只做 Rust 侧 cargo check，不做全量 build
+  # 同时运行平台适配测试，覆盖 macOS 桌面启动参数和后端支持边界
   check-macos:
     runs-on: macos-latest
     steps:
@@ -85,3 +85,6 @@ jobs:
 
       - name: Check Tauri shell (cargo check)
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
+
+      - name: Test macOS desktop adapters
+        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml --lib agents::desktop_tests

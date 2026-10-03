@@ -6,10 +6,7 @@ import * as api from "../api";
 import { useStore } from "../store";
 
 type Destination =
-	| "codex"
-	| "kimi"
-	| "kimidesktop"
-	| "dsh"
+	| api.AgentDestination
 	| "zcode"
 	| "editor"
 	| "terminal"
@@ -30,22 +27,13 @@ const labels: Record<Destination, string> = {
 const useOpening = create<{ target: Destination | null }>(() => ({
 	target: null,
 }));
-let supportRequest: Promise<boolean> | undefined;
+let supportRequest: Promise<api.AgentOpenSupport> | undefined;
 function supportsAgents() {
 	supportRequest ??= api.agentOpenSupport().catch((error) => {
 		supportRequest = undefined;
 		throw error;
 	});
 	return supportRequest;
-}
-// 安装探测与后端打开路径共用同一套 exe 定位；结果随应用缓存，安装后需重启。
-let desktopInstalledRequest: Promise<boolean> | undefined;
-function kimiDesktopInstalled() {
-	desktopInstalledRequest ??= api.kimiDesktopInstalled().catch((error) => {
-		desktopInstalledRequest = undefined;
-		throw error;
-	});
-	return desktopInstalledRequest;
 }
 
 export function OpenInMenu({
@@ -57,18 +45,25 @@ export function OpenInMenu({
 }) {
 	const target = useOpening((s) => s.target);
 	const [open, setOpen] = useState(false);
-	const [supported, setSupported] = useState<boolean | null>(null);
+	const [supported, setSupported] = useState<api.AgentOpenSupport | null>(null);
 	const [desktopInstalled, setDesktopInstalled] = useState<boolean | null>(
 		null,
 	);
 	const [error, setError] = useState("");
 	const container = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
+	const unsupported = supported
+		? (Object.keys(supported) as api.AgentDestination[]).filter(
+				(agent) => !supported[agent],
+			)
+		: [];
 	useEffect(() => {
 		if (!open) return;
 		setError("");
 		let cancelled = false;
-		void Promise.all([supportsAgents(), kimiDesktopInstalled()]).then(
+		// 每次展开重新检查安装状态，安装/移动应用后无需重启 GitGrove。
+		setDesktopInstalled(null);
+		void Promise.all([supportsAgents(), api.kimiDesktopInstalled()]).then(
 			([agents, installed]) => {
 				if (cancelled) return;
 				setSupported(agents);
@@ -154,24 +149,25 @@ export function OpenInMenu({
 									target !== null ||
 									((destination === "codex" ||
 										destination === "kimi" ||
+										destination === "kimidesktop" ||
 										destination === "dsh") &&
-										supported !== true) ||
-									(destination === "kimidesktop" &&
-										(supported !== true || desktopInstalled !== true))
+										supported?.[destination] !== true) ||
+									(destination === "kimidesktop" && desktopInstalled !== true)
 								}
 								onClick={() => void launch(destination)}
 							>
 								在 {labels[destination]} 中打开
 							</button>
 						))}
-					{supported === false && (
+					{unsupported.length > 0 && (
 						<p className="muted">
-							Codex / Kimi Code / Kimi Code Desktop / DSH 暂仅支持 Windows。
+							当前平台暂不支持：
+							{unsupported.map((agent) => labels[agent]).join(" / ")}。
 						</p>
 					)}
-					{supported === true && desktopInstalled === false && (
+					{supported?.kimidesktop && desktopInstalled === false && (
 						<p className="muted">
-							未检测到 Kimi Code Desktop，安装后重启 GitGrove 即可使用。
+							未检测到 Kimi Code Desktop，安装后重新打开此菜单即可使用。
 						</p>
 					)}
 					{supported === null && !error && (
