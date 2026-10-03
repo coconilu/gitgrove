@@ -71,7 +71,7 @@ mod macos {
 
     #[test]
     fn incomplete_or_non_executable_bundles_are_not_installed() {
-        let root = std::env::temp_dir().join(format!("gitgrove-bundle-test-{}", ulid::Ulid::new()));
+        let root = std::env::temp_dir().join(format!("gitgrove-bundle-test-{}", ulid::Ulid::generate()));
         let bundle = root.join("Kimi Code.app");
         let executable = bundle.join("Contents/MacOS/Kimi Code");
         assert!(!kimi_desktop_available(&bundle));
