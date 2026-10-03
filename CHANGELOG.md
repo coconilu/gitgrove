@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.8（2026-10-03）
+
+- Merge pull request #104 from coconilu/codex/macos-desktop-agents
+- test: use current ULID generator in desktop checks
+- feat: support Codex and Kimi Desktop on macOS
+
 ## v1.3.7（2026-09-27）
 
 - Merge pull request #100 from coconilu/fix/macos-keychain-never-touch
