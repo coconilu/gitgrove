@@ -58,7 +58,7 @@ cargo test --manifest-path app/src-tauri/Cargo.toml --lib agents::tests::desktop
 
 ## CI / CD
 
-**ci.yml**（PR 与 master push，windows-latest）：pnpm 安装 → Biome lint → 前端 build → 发版脚本测试 → 前端单测 → `cargo check` → `cargo test --lib`；另有 macos-latest 的 `check-macos` 只跑 `cargo check`，拦住被 `#[cfg]` 摘掉后在其它平台编译不过的代码。
+**ci.yml**（PR 与 master push，windows-latest）：pnpm 安装 → Biome lint → 前端 build → 发版脚本测试 → 前端单测 → `cargo check` → `cargo test --lib`；另有 macos-latest 的 `check-macos` 运行 `cargo check` 与 `agents::desktop_tests`，覆盖跨平台编译和 macOS 桌面入口的参数、安装检测与失败处理。
 
 **release.yml**（一键发版）：只有手动 `workflow_dispatch`（patch/minor/major/none）一个触发器，`workflow_run` 与 `issues: [closed]` 都已删除。流程为 prepare（bump 版本 + 自动合并版本 PR；master HEAD 已有绿 CI 时走快速通道，命中分支保护的 405 拒绝则回退等待该 PR 的 CI）→ version（校验提交与 CI）→ build（Windows + macOS 矩阵打包）→ publish（生成 updater manifest `latest.json`、创建并发布 GitHub Release）。两个 workflow 的 Rust job 都挂 `Swatinem/rust-cache@v2`，但 `gitgrove-CI-*` 与 `gitgrove-Release-*` 是互不相通的缓存命名空间，首次发版仍是冷缓存。详细操作、提速说明与发版时长基准见 [.github/RELEASING.md](../.github/RELEASING.md)。
 

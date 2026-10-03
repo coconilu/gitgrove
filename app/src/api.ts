@@ -156,13 +156,14 @@ export const openInTerminal = (path: string) =>
 	invoke<void>("open_in_terminal", { path });
 export const openInZcode = (path: string) =>
 	invoke<void>("open_in_zcode", { path });
-export const agentOpenSupport = () => invoke<boolean>("agent_open_support");
+export type AgentDestination = "codex" | "kimi" | "kimidesktop" | "dsh";
+export type AgentOpenSupport = Record<AgentDestination, boolean>;
+export const agentOpenSupport = () =>
+	invoke<AgentOpenSupport>("agent_open_support");
 export const kimiDesktopInstalled = () =>
 	invoke<boolean>("kimi_desktop_installed");
-export const openInAgent = (
-	path: string,
-	agent: "codex" | "kimi" | "kimidesktop" | "dsh",
-) => invoke<{ message: string }>("open_in_agent", { path, agent });
+export const openInAgent = (path: string, agent: AgentDestination) =>
+	invoke<{ message: string }>("open_in_agent", { path, agent });
 export const getLaunchPreferences = () =>
 	invoke<LaunchPreferences>("get_launch_preferences");
 export const saveLaunchPreferences = (preferences: LaunchPreferences) =>

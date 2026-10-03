@@ -33,13 +33,35 @@ pub enum Agent {
     Dsh,
 }
 
-#[tauri::command]
-pub fn agent_open_support() -> bool {
-    // Other platforms retain the existing editor/terminal adapters.
-    cfg!(windows)
+#[derive(Serialize)]
+pub struct AgentOpenSupport {
+    codex: bool,
+    kimi: bool,
+    kimidesktop: bool,
+    dsh: bool,
 }
 
-// Kimi Code Desktop 的检测与打开路径一样只在 Windows 有意义。
+impl AgentOpenSupport {
+    fn supports(&self, agent: Agent) -> bool {
+        match agent {
+            Agent::Codex => self.codex,
+            Agent::Kimi => self.kimi,
+            Agent::KimiDesktop => self.kimidesktop,
+            Agent::Dsh => self.dsh,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn agent_open_support() -> AgentOpenSupport {
+    AgentOpenSupport {
+        codex: cfg!(any(windows, target_os = "macos")),
+        kimi: cfg!(windows),
+        kimidesktop: cfg!(any(windows, target_os = "macos")),
+        dsh: cfg!(windows),
+    }
+}
+
 #[tauri::command]
 pub fn kimi_desktop_installed() -> bool {
     kimi_desktop_executable().is_ok()
@@ -109,7 +131,7 @@ fn open_gui_url(url: &Url, agent: Agent) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = (url, agent);
-        Err("本版本的 Codex / Kimi Code / Kimi Code Desktop / DSH 图形界面入口仅在 Windows 启用。".into())
+        Err("当前平台暂不支持此 Web 或协议入口。".into())
     }
 }
 
@@ -132,11 +154,27 @@ fn kimi_desktop_candidates() -> Vec<PathBuf> {
                 .map(|local| PathBuf::from(local).join(r"Programs\Kimi Code\Kimi Code.exe"))
                 .unwrap_or_default(),
         ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/Applications/Kimi Code.app"),
+            git::home_dir().join("Applications/Kimi Code.app"),
+        ]
     } else {
         Vec::new()
     }
 }
 
+fn kimi_desktop_available(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // 目录存在不代表安装完整；检测与启动使用同一个 bundle。
+        git::executable_file(&path.join("Contents/MacOS/Kimi Code"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    path.is_file()
+}
+
+// Windows 返回 exe，macOS 返回供 Launch Services 启动的 .app bundle。
 fn kimi_desktop_executable() -> Result<PathBuf, String> {
     #[cfg(windows)]
     if let Some(exe) = kimi_desktop_registered_exe() {
@@ -144,8 +182,10 @@ fn kimi_desktop_executable() -> Result<PathBuf, String> {
     }
     kimi_desktop_candidates()
         .into_iter()
-        .find(|p| p.is_file())
-        .ok_or_else(|| "未找到 Kimi Code Desktop。请安装 Windows 版 Kimi Code Desktop 后重启 GitGrove。".into())
+        .find(|p| kimi_desktop_available(p))
+        .ok_or_else(|| {
+            "未找到 Kimi Code Desktop。请安装到系统或用户的应用目录后重新打开此菜单。".into()
+        })
 }
 
 // 注册表命令行的 exe 段提取：带引号取第一对引号内的完整路径（可含空格），
@@ -187,6 +227,14 @@ fn registry_default_string(subkey: &str) -> Option<String> {
 }
 
 fn kimi_desktop_command(executable: &Path, target: &Path) -> Command {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        // 已运行时普通 open 会丢弃 argv；-n 让第二个进程通过 Electron 单实例锁转发。
+        command.args(["-n", "-a"]).arg(executable).arg("--args");
+        command
+    };
+    #[cfg(not(target_os = "macos"))]
     let mut command = git::new_cmd(&executable.to_string_lossy());
     // --workspace 是 Kimi Code Desktop 未承诺的稳定接口（与 codex:// 同定性），
     // Windows Jump List「最近工作区」即以该参数启动。整段单参数传递，由 std
@@ -197,6 +245,33 @@ fn kimi_desktop_command(executable: &Path, target: &Path) -> Command {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+#[cfg(target_os = "macos")]
+fn codex_macos_command(target: &Path) -> Command {
+    let mut command = Command::new("/usr/bin/open");
+    // 与 codex app 一样通过 macOS 的目录打开事件传递工作区。Bundle ID 避免
+    // 依赖 GUI PATH、CLI 安装以及 Codex/ChatGPT 的应用显示名称。
+    command.args(["-b", "com.openai.codex"]).arg(target);
+    command
+}
+
+#[cfg(target_os = "macos")]
+async fn run_macos_open(mut command: Command, error: &str) -> Result<(), String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    let status = tokio::time::timeout(Duration::from_secs(15), command.status())
+        .await
+        .map_err(|_| "打开应用超时，请检查目标应用状态后重试。".to_string())?
+        .map_err(|_| error.to_string())?;
+    if !status.success() {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Deserialize)]
@@ -1181,8 +1256,8 @@ pub struct OpenReceipt {
 
 #[tauri::command]
 pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, String> {
-    if !agent_open_support() {
-        return Err("本版本的 Codex / Kimi Code / Kimi Code Desktop / DSH 图形界面入口仅在 Windows 启用。".into());
+    if !agent_open_support().supports(agent) {
+        return Err("当前平台暂不支持此工具入口。Codex / Kimi Code Desktop 支持 Windows 和 macOS；Kimi Code Web / DSH 暂仅支持 Windows。".into());
     }
     // A backend guard also protects multiple windows and callers bypassing the UI.
     let _guard = OPEN_LOCK
@@ -1191,6 +1266,13 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
     let target = target_directory(&path)?;
     match agent {
         Agent::Codex => {
+            #[cfg(target_os = "macos")]
+            run_macos_open(
+                codex_macos_command(&target),
+                "无法打开 Codex：请确认已安装 macOS 桌面应用，并能从应用目录正常启动。",
+            )
+            .await?;
+            #[cfg(not(target_os = "macos"))]
             open_gui_url(&codex_url(&target), agent)?;
             Ok(OpenReceipt {
                 message: "已向 Codex 发送打开请求，请在 Codex 中确认项目。",
@@ -1215,6 +1297,13 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
             // 与 Codex 相同的回执语义：没有完成回执，启动即返回。已运行实例由
             // Electron 单实例锁热打开该工作区，无需等待进程退出。
             let executable = kimi_desktop_executable()?;
+            #[cfg(target_os = "macos")]
+            run_macos_open(
+                kimi_desktop_command(&executable, &target),
+                "Kimi Code Desktop 启动失败，请检查安装后重试。",
+            )
+            .await?;
+            #[cfg(not(target_os = "macos"))]
             kimi_desktop_command(&executable, &target)
                 .spawn()
                 .map_err(|_| "Kimi Code Desktop 启动失败，请检查安装后重试。")?;
@@ -1288,3 +1377,6 @@ pub async fn open_in_agent(path: String, agent: Agent) -> Result<OpenReceipt, St
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod desktop_tests;
