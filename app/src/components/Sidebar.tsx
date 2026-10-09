@@ -22,6 +22,11 @@ import {
 import { Input } from "./ui/input";
 import { Select } from "./ui/select";
 
+// 私有项目在名称右侧显示的 tag；与 MyGitHub 仓库列表一样复用 .priv 样式。
+// 返回纯数据而非 JSX：node 测试无法整体加载含 JSX 的本文件，只能提取此函数求值
+export const privateTag = (p: Pick<Project, "isPrivate">) =>
+	p.isPrivate ? { className: "priv", label: "私有" } : null;
+
 export default function Sidebar() {
 	const s = useStore();
 	const [query, setQuery] = useState("");
@@ -196,63 +201,71 @@ export default function Sidebar() {
 					/>
 				)}
 				{s.groupBy === "repo"
-					? projects.map((p) => (
-							<div className="proj" key={p.id}>
-								<div
-									className={
-										"project-row" +
-										(active?.id === p.id && s.view === "projects"
-											? " current"
-											: "")
-									}
-								>
-									<button
-										className="project-select"
-										title={p.localPath}
-										aria-label={(isExpanded(p.id) ? "收起 " : "展开 ") + p.name}
-										aria-expanded={isExpanded(p.id)}
-										onClick={() => {
-											// 搜索中展开是视图层强制的，翻转持久化状态不可见且会
-											// 在清空搜索后意外改变展开状态，这里只打开不切换
-											if (!q) s.toggleProject(p.id);
-											s.openProject(p.id);
-										}}
+					? projects.map((p) => {
+							const tag = privateTag(p);
+							return (
+								<div className="proj" key={p.id}>
+									<div
+										className={
+											"project-row" +
+											(active?.id === p.id && s.view === "projects"
+												? " current"
+												: "")
+										}
 									>
-										<svg
-											className="project-chevron"
-											width="16"
-											height="16"
-											viewBox="0 0 16 16"
-											fill="none"
-											stroke="currentColor"
-											strokeWidth="1.5"
-											strokeLinecap="round"
-											strokeLinejoin="round"
-											aria-hidden="true"
+										<button
+											className="project-select"
+											title={p.localPath}
+											aria-label={
+												(isExpanded(p.id) ? "收起 " : "展开 ") + p.name
+											}
+											aria-expanded={isExpanded(p.id)}
+											onClick={() => {
+												// 搜索中展开是视图层强制的，翻转持久化状态不可见且会
+												// 在清空搜索后意外改变展开状态，这里只打开不切换
+												if (!q) s.toggleProject(p.id);
+												s.openProject(p.id);
+											}}
 										>
-											<path d="m6 4 4 4-4 4" />
-										</svg>
-										<span className="dot" style={{ background: p.color }} />
-										<span className="project-name">{p.name}</span>
-										<span className="count-pill">{p.checkouts.length}</span>
-									</button>
-									<DropdownMenu>
-										<DropdownMenuTrigger
-											className="project-menu-trigger"
-											aria-label={"项目操作：" + p.name}
-										>
-											⋯
-										</DropdownMenuTrigger>
-										<DropdownMenuContent>
-											<DropdownMenuItem onSelect={() => remove(p)}>
-												移除项目…
-											</DropdownMenuItem>
-										</DropdownMenuContent>
-									</DropdownMenu>
+											<svg
+												className="project-chevron"
+												width="16"
+												height="16"
+												viewBox="0 0 16 16"
+												fill="none"
+												stroke="currentColor"
+												strokeWidth="1.5"
+												strokeLinecap="round"
+												strokeLinejoin="round"
+												aria-hidden="true"
+											>
+												<path d="m6 4 4 4-4 4" />
+											</svg>
+											<span className="dot" style={{ background: p.color }} />
+											<span className="project-name">{p.name}</span>
+											{tag && (
+												<span className={tag.className}>{tag.label}</span>
+											)}
+											<span className="count-pill">{p.checkouts.length}</span>
+										</button>
+										<DropdownMenu>
+											<DropdownMenuTrigger
+												className="project-menu-trigger"
+												aria-label={"项目操作：" + p.name}
+											>
+												⋯
+											</DropdownMenuTrigger>
+											<DropdownMenuContent>
+												<DropdownMenuItem onSelect={() => remove(p)}>
+													移除项目…
+												</DropdownMenuItem>
+											</DropdownMenuContent>
+										</DropdownMenu>
+									</div>
+									{isExpanded(p.id) && p.checkouts.map((c) => checkout(p, c))}
 								</div>
-								{isExpanded(p.id) && p.checkouts.map((c) => checkout(p, c))}
-							</div>
-						))
+							);
+						})
 					: Object.entries(lanes).map(([name, entries]) => (
 							<section className="proj" key={name}>
 								<h3 className="lane-title">
