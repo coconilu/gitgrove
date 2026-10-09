@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.9（2026-10-09）
+
+- Merge pull request #107 from coconilu/feat/sidebar-private-tag-issue106
+- feat(sidebar): 私有项目名称右侧显示（私有）tag
+
 ## v1.3.8（2026-10-03）
 
 - Merge pull request #104 from coconilu/codex/macos-desktop-agents
